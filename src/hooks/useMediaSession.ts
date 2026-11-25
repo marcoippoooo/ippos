@@ -59,7 +59,7 @@ function buildMetadataFromStore(): MediaMetadataPayload {
     trackId: track?.id ?? "",
     title: track?.title ?? "",
     artist: track?.artist ?? "",
-    album: track?.album || (track ? "Ippos" : ""),
+    album: track?.album || (track ? "IPPOS" : ""),
     duration,
     currentTime,
     playbackState,
@@ -221,7 +221,7 @@ export function useMediaSession() {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: currentTrack.title,
       artist: currentTrack.artist,
-      album: currentTrack.album || "Ippos",
+      album: currentTrack.album || "IPPOS",
       artwork: [
         {
           src: currentTrack.cover,

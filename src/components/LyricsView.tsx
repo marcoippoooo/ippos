@@ -2,7 +2,9 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   LocateFixed,
+  Maximize2,
   Mic2,
+  Minimize2,
   Music,
   RefreshCw,
 } from "lucide-react";
@@ -19,12 +21,15 @@ interface SyncedLyricRowProps {
   text: string;
   time: number;
   visualState: LineVisualState;
+  distance: number;
   fontPx: number;
   lineHeight: number;
   blurInactive: boolean;
   clickToSeek: boolean;
   isManualScrolling: boolean;
-  onSeek: (time: number) => void;
+  isContainerHovered: boolean;
+  isCinemaMode: boolean;
+  onSeek: (time: number, index: number) => void;
   setRowRef: (index: number, el: HTMLButtonElement | null) => void;
 }
 
@@ -35,17 +40,40 @@ const SyncedLyricRow = memo(function SyncedLyricRow({
   text,
   time,
   visualState,
+  distance,
   fontPx,
   lineHeight,
   blurInactive,
   clickToSeek,
   isManualScrolling,
+  isContainerHovered,
+  isCinemaMode,
   onSeek,
   setRowRef,
 }: SyncedLyricRowProps) {
   const isActive = visualState === "active";
   const isPast = visualState === "past";
-  const shouldBlur = blurInactive && !isManualScrolling;
+  const absDistance = Math.abs(distance);
+  const shouldBlur = blurInactive && !isManualScrolling && !isContainerHovered;
+
+  const blurClass =
+    !shouldBlur || absDistance <= 1
+      ? "blur-0"
+      : absDistance === 2
+        ? "blur-[1px]"
+        : "blur-[1.5px]";
+
+  const inactiveOpacityClass = isPast
+    ? absDistance === 1
+      ? "opacity-[0.44]"
+      : "opacity-[0.28]"
+    : absDistance === 1
+      ? "opacity-[0.58]"
+      : "opacity-[0.36]";
+
+  const nativeFontPx = isCinemaMode
+    ? Math.max(30, fontPx + 6)
+    : Math.max(28, fontPx + 4);
 
   return (
     <button
@@ -53,25 +81,19 @@ const SyncedLyricRow = memo(function SyncedLyricRow({
       type="button"
       onClick={() => {
         if (clickToSeek) {
-          onSeek(time);
+          onSeek(time, index);
         }
       }}
       style={{
-        fontSize: `${isActive ? fontPx : Math.max(16, fontPx - 3)}px`,
+        fontSize: `${nativeFontPx}px`,
         lineHeight,
       }}
-      className={`group block w-full text-left py-2 transition-all duration-300 ease-out origin-left focus:outline-none tracking-[-0.02em] ${
+      className={`group block w-full text-left px-3 -mx-3 py-2.5 rounded-2xl origin-left transition-[transform,opacity,filter,background-color] duration-300 ease-out focus:outline-none tracking-[-0.025em] ${
         clickToSeek ? "cursor-pointer" : "cursor-default"
       } ${
         isActive
-          ? "font-bold text-white opacity-100 scale-[1.01]"
-          : isPast
-            ? `font-semibold text-white/35 ${
-                clickToSeek ? "hover:text-white/85" : ""
-              } ${shouldBlur ? "blur-[0.6px] hover:blur-none" : ""}`
-            : `font-semibold text-white/45 ${
-                clickToSeek ? "hover:text-white/90" : ""
-              } ${shouldBlur ? "blur-[0.45px] hover:blur-none" : ""}`
+          ? "font-bold text-white opacity-100 scale-100 blur-0"
+          : `font-bold text-white scale-[0.94] ${inactiveOpacityClass} ${blurClass} hover:opacity-100 hover:scale-[0.97] hover:bg-white/[0.04]`
       }`}
     >
       {text}
@@ -99,14 +121,29 @@ export function LyricsView() {
   const lyricsSyncOffsetSec = usePlayerStore(
     (s) => s.preferences.lyricsSyncOffsetSec,
   );
+  const isCinemaMode = usePlayerStore((s) => s.isCinemaMode);
+  const trackLyricsOffsets = usePlayerStore((s) => s.trackLyricsOffsets);
   const seekTo = usePlayerStore((s) => s.seekTo);
   const resumePlayback = usePlayerStore((s) => s.resumePlayback);
+  const toggleCinemaMode = usePlayerStore((s) => s.toggleCinemaMode);
+  const adjustTrackLyricsOffset = usePlayerStore(
+    (s) => s.adjustTrackLyricsOffset,
+  );
+  const resetTrackLyricsOffset = usePlayerStore(
+    (s) => s.resetTrackLyricsOffset,
+  );
+
+  const trackOffsetSec = currentTrack
+    ? (trackLyricsOffsets[currentTrack.id] ?? 0)
+    : 0;
+  const effectiveSyncOffsetSec = lyricsSyncOffsetSec + trackOffsetSec;
 
   const { status, data, error, retry } = useLyrics();
 
   const [activeLineIndex, setActiveLineIndex] = useState(-1);
+  const [isLyricsHovered, setIsLyricsHovered] = useState(false);
 
-  // Sincronizzazione immediata su cambio testo/traccia/seek/pausa
+  // Sincronizzazione immediata su cambio testo/traccia/seek/pausa/offset
   useEffect(() => {
     if (data?.mode !== "synced") {
       setActiveLineIndex(-1);
@@ -116,9 +153,18 @@ export function LyricsView() {
       playbackStatus === "playing" && audioEngine.hasSource()
         ? audioEngine.getCurrentTime()
         : progress;
-    const next = findActiveLyricIndex(data.lines, time + lyricsSyncOffsetSec);
+    const next = findActiveLyricIndex(
+      data.lines,
+      time + effectiveSyncOffsetSec,
+    );
     setActiveLineIndex((prev) => (prev === next ? prev : next));
-  }, [data, currentTrack?.id, playbackStatus, progress, lyricsSyncOffsetSec]);
+  }, [
+    data,
+    currentTrack?.id,
+    playbackStatus,
+    progress,
+    effectiveSyncOffsetSec,
+  ]);
 
   // Campionamento continuo via requestAnimationFrame su audioEngine.getCurrentTime() per eliminare drift da timeupdate
   useEffect(() => {
@@ -133,7 +179,7 @@ export function LyricsView() {
         : usePlayerStore.getState().progress;
       const next = findActiveLyricIndex(
         data.lines,
-        time + lyricsSyncOffsetSec,
+        time + effectiveSyncOffsetSec,
       );
       setActiveLineIndex((prev) => (prev === next ? prev : next));
       rafId = window.requestAnimationFrame(tick);
@@ -143,7 +189,7 @@ export function LyricsView() {
     return () => {
       window.cancelAnimationFrame(rafId);
     };
-  }, [data, playbackStatus, lyricsSyncOffsetSec]);
+  }, [data, playbackStatus, effectiveSyncOffsetSec]);
 
   const [isManualScrolling, setIsManualScrolling] = useState(false);
   const rowRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -227,15 +273,23 @@ export function LyricsView() {
   }, [activeLineIndex, clearResumeTimer, scrollLineToCenter]);
 
   const handleSeekToLine = useCallback(
-    (time: number) => {
+    (time: number, index: number) => {
+      setActiveLineIndex(index);
       clearResumeTimer();
       setIsManualScrolling(false);
-      seekTo(time);
+      seekTo(Math.max(0, time - effectiveSyncOffsetSec));
       if (usePlayerStore.getState().playbackStatus !== "playing") {
         resumePlayback();
       }
+      scrollLineToCenter(index);
     },
-    [clearResumeTimer, seekTo, resumePlayback],
+    [
+      clearResumeTimer,
+      seekTo,
+      effectiveSyncOffsetSec,
+      resumePlayback,
+      scrollLineToCenter,
+    ],
   );
 
   if (!currentTrack) {
@@ -254,8 +308,38 @@ export function LyricsView() {
     );
   }
 
+  const formattedOffset =
+    trackOffsetSec > 0
+      ? `+${trackOffsetSec.toFixed(1)}s`
+      : `${trackOffsetSec.toFixed(1)}s`;
+
   return (
-    <div className="relative h-full max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-[260px_1fr] lg:grid-cols-[300px_1fr] gap-8 lg:gap-14 overflow-hidden">
+    <div
+      className={`relative h-full min-h-0 mx-auto grid grid-cols-1 overflow-visible transition-[max-width,gap] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+        isCinemaMode
+          ? "max-w-7xl md:grid-cols-[300px_1fr] lg:grid-cols-[360px_1fr] gap-10 lg:gap-16"
+          : "max-w-6xl md:grid-cols-[260px_1fr] lg:grid-cols-[300px_1fr] gap-8 lg:gap-14"
+      }`}
+    >
+      {/* Pulsante discreto Modalità Cinema */}
+      <button
+        type="button"
+        onClick={toggleCinemaMode}
+        title={isCinemaMode ? "Esci dalla modalità Cinema (Esc)" : "Modalità Cinema"}
+        aria-label={
+          isCinemaMode ? "Esci dalla modalità Cinema" : "Attiva modalità Cinema"
+        }
+        className={`absolute z-30 p-2.5 rounded-full backdrop-blur-xl border border-white/[0.10] bg-white/[0.06] hover:bg-white/[0.14] text-white/75 hover:text-white hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer ${
+          isCinemaMode ? "top-3 right-4" : "top-3 right-3"
+        }`}
+      >
+        {isCinemaMode ? (
+          <Minimize2 className="w-4 h-4" />
+        ) : (
+          <Maximize2 className="w-4 h-4" />
+        )}
+      </button>
+
       {/* Riflesso ambientale discreto dello sfondo dinamico nella vista testi */}
       <div
         aria-hidden="true"
@@ -267,22 +351,48 @@ export function LyricsView() {
       />
 
       {/* Colonna sinistra: Copertina, metadati e stato sincronizzazione */}
-      <div className="flex flex-col justify-center py-4 space-y-5 shrink-0">
-        <div className="relative">
+      <div
+        className={`flex flex-col justify-center py-4 space-y-5 shrink-0 overflow-visible ${
+          isCinemaMode ? "pt-8" : ""
+        }`}
+      >
+        <div
+          className={`relative w-full overflow-visible transition-[max-width] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+            isCinemaMode ? "max-w-[330px]" : "max-w-[280px]"
+          }`}
+        >
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute -inset-3 rounded-3xl blur-2xl transition-colors duration-700"
+            className="pointer-events-none absolute -inset-10"
             style={{
-              backgroundColor: "rgb(var(--theme-primary-rgb) / 0.34)",
+              maskImage:
+                "radial-gradient(closest-side, black 34%, transparent 100%)",
+              WebkitMaskImage:
+                "radial-gradient(closest-side, black 34%, transparent 100%)",
             }}
-          />
+          >
+            <div
+              className="absolute inset-4 rounded-full blur-2xl opacity-65 transition-colors duration-700"
+              style={{
+                backgroundColor: "rgb(var(--theme-primary-rgb) / 0.48)",
+              }}
+            />
+            <img
+              src={currentTrack.cover}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="absolute inset-5 w-[calc(100%-2.5rem)] h-[calc(100%-2.5rem)] rounded-[30px] object-cover blur-2xl opacity-50 saturate-150 transition-all duration-700"
+            />
+          </div>
           <img
             src={currentTrack.cover}
             alt={currentTrack.title}
             referrerPolicy="no-referrer"
-            className="relative w-full max-w-[280px] aspect-square rounded-[26px] object-cover ring-1 ring-white/10 shadow-2xl shadow-black/60 at-tonal"
+            className="relative w-full aspect-square rounded-[26px] object-cover ring-1 ring-white/[0.14] at-tonal"
             style={{
               backgroundColor: "rgb(var(--md-surface-container-rgb))",
+              boxShadow:
+                "0 20px 44px -10px rgb(var(--theme-primary-rgb) / 0.50), 0 10px 24px -6px rgb(var(--theme-accent-rgb) / 0.24), 0 14px 32px rgba(0, 0, 0, 0.50)",
             }}
           />
         </div>
@@ -327,6 +437,49 @@ export function LyricsView() {
             </span>
           )}
 
+          {status === "success" && data?.mode === "synced" && (
+            <div
+              className="inline-flex items-center rounded-full border border-white/[0.10] backdrop-blur-xl overflow-hidden text-[11px] font-semibold tabular-nums at-tonal"
+              style={{
+                backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.72)",
+                color: "rgb(var(--md-on-surface-variant-rgb))",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => adjustTrackLyricsOffset(currentTrack.id, -0.5)}
+                title="Anticipa testo di 0.5s"
+                aria-label="Anticipa sincronizzazione testo di 0.5 secondi"
+                className="px-2 py-1 hover:bg-white/[0.09] hover:text-white active:scale-95 transition-colors cursor-pointer"
+              >
+                -0.5s
+              </button>
+              <button
+                type="button"
+                onClick={() => resetTrackLyricsOffset(currentTrack.id)}
+                title="Ripristina offset a 0.0s"
+                aria-label="Ripristina offset sincronizzazione a zero"
+                className="px-2 py-1 border-x border-white/[0.08] hover:bg-white/[0.09] hover:text-white transition-colors cursor-pointer"
+                style={
+                  trackOffsetSec !== 0
+                    ? { color: "rgb(var(--md-accent-primary-rgb))" }
+                    : undefined
+                }
+              >
+                {formattedOffset}
+              </button>
+              <button
+                type="button"
+                onClick={() => adjustTrackLyricsOffset(currentTrack.id, 0.5)}
+                title="Ritarda testo di 0.5s"
+                aria-label="Ritarda sincronizzazione testo di 0.5 secondi"
+                className="px-2 py-1 hover:bg-white/[0.09] hover:text-white active:scale-95 transition-colors cursor-pointer"
+              >
+                +0.5s
+              </button>
+            </div>
+          )}
+
           {data?.mode === "synced" && isManualScrolling && (
             <button
               type="button"
@@ -347,9 +500,19 @@ export function LyricsView() {
       {/* Colonna destra: Testo sincronizzato o fallback */}
       <div
         ref={scrollContainerRef}
+        onMouseEnter={() => setIsLyricsHovered(true)}
+        onMouseLeave={() => setIsLyricsHovered(false)}
         onWheel={handleManualScrollActivity}
         onTouchMove={handleManualScrollActivity}
-        className="relative h-full overflow-y-auto pr-4"
+        onPointerDown={(e) => {
+          const container = scrollContainerRef.current;
+          if (!container) return;
+          const rect = container.getBoundingClientRect();
+          if (rect.right - e.clientX <= 16) {
+            handleManualScrollActivity();
+          }
+        }}
+        className="relative h-full min-h-0 overflow-y-auto pr-4"
         style={
           data?.mode === "synced"
             ? {
@@ -418,13 +581,17 @@ export function LyricsView() {
               Nessun testo disponibile
             </p>
             <p className="text-[13px] text-zinc-400">
-              Non è stato trovato alcun testo né su YouTube Music né su LRCLIB per questo brano.
+              Non è stato trovato alcun testo né su LRCLIB né su YouTube Music per questo brano.
             </p>
           </div>
         )}
 
         {status === "success" && data?.mode === "synced" && (
-          <div className="py-[32vh] space-y-3 max-w-2xl">
+          <div
+            className={`py-[32vh] pl-2 pr-6 space-y-3 ${
+              isCinemaMode ? "max-w-3xl" : "max-w-2xl"
+            }`}
+          >
             {data.lines.map((line, index) => {
               const visualState: LineVisualState =
                 index === activeLineIndex
@@ -432,6 +599,8 @@ export function LyricsView() {
                   : activeLineIndex >= 0 && index < activeLineIndex
                     ? "past"
                     : "upcoming";
+              const distance =
+                activeLineIndex >= 0 ? index - activeLineIndex : index;
 
               return (
                 <SyncedLyricRow
@@ -440,11 +609,14 @@ export function LyricsView() {
                   text={line.text}
                   time={line.time}
                   visualState={visualState}
+                  distance={distance}
                   fontPx={lyricsFontPx}
                   lineHeight={lyricsLineHeight}
                   blurInactive={lyricsBlurInactive}
                   clickToSeek={lyricsClickToSeek}
                   isManualScrolling={isManualScrolling}
+                  isContainerHovered={isLyricsHovered}
+                  isCinemaMode={isCinemaMode}
                   onSeek={handleSeekToLine}
                   setRowRef={setRowRef}
                 />

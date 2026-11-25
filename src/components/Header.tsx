@@ -33,10 +33,9 @@ export function Header() {
 
   return (
     <header
-      className="h-[54px] shrink-0 flex items-center gap-4 px-6 backdrop-blur-2xl z-10 select-none at-tonal"
+      className="h-[54px] shrink-0 flex items-center gap-4 px-6 backdrop-blur-2xl border-b border-white/[0.08] z-10 select-none at-tonal"
       style={{
-        backgroundColor: "rgb(var(--md-surface-base-rgb) / 0.62)",
-        borderBottom: "1px solid rgb(var(--md-outline-rgb) / 0.18)",
+        backgroundColor: "rgb(var(--md-surface-base-rgb) / 0.44)",
       }}
       data-tauri-drag-region
     >
@@ -86,10 +85,9 @@ export function Header() {
             }
           }}
           placeholder="Cerca su YouTube Music..."
-          className="w-full h-9 rounded-full pl-9 pr-14 text-[12.5px] focus:outline-none focus:ring-2 focus:ring-[rgb(var(--md-accent-primary-rgb)/0.55)] placeholder:text-zinc-400/75 at-tonal"
+          className="w-full h-9 rounded-full pl-9 pr-14 text-[12.5px] border border-white/[0.08] shadow-sm shadow-black/20 focus:outline-none focus:ring-2 focus:ring-[rgb(var(--md-accent-primary-rgb)/0.55)] placeholder:text-zinc-400/75 at-tonal"
           style={{
-            backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.92)",
-            border: "1px solid rgb(var(--md-outline-rgb) / 0.26)",
+            backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.78)",
             color: "rgb(var(--md-on-surface-rgb))",
           }}
         />

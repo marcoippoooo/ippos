@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -11,6 +12,7 @@ import {
   Disc3,
   Download,
   FolderOpen,
+  Gamepad2,
   Globe,
   HardDrive,
   Info,
@@ -25,6 +27,7 @@ import {
   Radio,
   ShieldCheck,
   SlidersHorizontal,
+  SlidersVertical,
   Sparkles,
   Trash2,
   Upload,
@@ -42,6 +45,7 @@ import {
   invalidateAudioStreamCache,
   parseArtistsFromString,
 } from "../services/ytmusic";
+import { EQUALIZER_PRESETS } from "../services/audioEngine";
 import { usePlayerStore } from "../store/playerStore";
 import { useToastStore } from "../store/toastStore";
 import {
@@ -58,6 +62,7 @@ import {
 } from "../types/music";
 import { formatTime } from "../utils/formatTime";
 import { ArtistLinks } from "./ArtistLinks";
+import { EqualizerPanel } from "./EqualizerPanel";
 import { ExpressiveSlider } from "./ExpressiveSlider";
 import { ScallopedArtwork } from "./ScallopedArtwork";
 import {
@@ -76,6 +81,7 @@ type SettingsSection =
   | "main"
   | "appearance"
   | "playback"
+  | "equalizer"
   | "lyrics"
   | "stats"
   | "storage"
@@ -90,13 +96,14 @@ const SECTION_TITLES: Record<SettingsSection, string> = {
   main: "Impostazioni",
   appearance: "Aspetto",
   playback: "Lettore e audio",
+  equalizer: "Equalizzatore Audio",
   lyrics: "Testi",
   stats: "Statistiche",
   storage: "Stoccaggio e cache",
-  media: "Ippos Island & Media Player",
+  media: "IPPOS Island & Media Player",
   content: "Contenuto",
   behavior: "Comportamento",
-  about: "Informazioni su Ippos",
+  about: "Informazioni su IPPOS",
 };
 
 const VIBRANCY_OPTIONS: {
@@ -153,7 +160,7 @@ const CLOSE_BEHAVIOR_OPTIONS: {
   },
   {
     id: "quit",
-    label: "Chiudi Ippos",
+    label: "Chiudi IPPOS",
     hint: "Arresta audio e chiude la finestra",
   },
 ];
@@ -232,15 +239,22 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
   const likedTracks = usePlayerStore((s) => s.likedTracks);
   const recentTracks = usePlayerStore((s) => s.recentTracks);
   const playlists = usePlayerStore((s) => s.playlists);
+  const downloadedTrackIds = usePlayerStore((s) => s.downloadedTrackIds);
+  const offlineCacheRevision = usePlayerStore((s) => s.offlineCacheRevision);
   const volume = usePlayerStore((s) => s.volume);
   const shuffle = usePlayerStore((s) => s.shuffle);
   const repeat = usePlayerStore((s) => s.repeat);
+  const autoplayEnabled = usePlayerStore((s) => s.autoplayEnabled);
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const playbackStatus = usePlayerStore((s) => s.playbackStatus);
 
   const updatePreferences = usePlayerStore((s) => s.updatePreferences);
+  const setAutoplayEnabled = usePlayerStore((s) => s.setAutoplayEnabled);
   const clearPlayStats = usePlayerStore((s) => s.clearPlayStats);
   const clearRecentTracks = usePlayerStore((s) => s.clearRecentTracks);
+  const clearAllDownloadedTracks = usePlayerStore(
+    (s) => s.clearAllDownloadedTracks,
+  );
   const hydrateLibrary = usePlayerStore((s) => s.hydrateLibrary);
   const playTrack = usePlayerStore((s) => s.playTrack);
   const openArtist = usePlayerStore((s) => s.openArtist);
@@ -250,7 +264,36 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
   const [statsRange, setStatsRange] = useState<StatsTimeRange>("all");
   const [confirmResetStats, setConfirmResetStats] = useState(false);
   const [cacheNonce, setCacheNonce] = useState(0);
+  const [offlineCacheStats, setOfflineCacheStats] = useState<{
+    totalBytes: number;
+    trackCount: number;
+    cacheDir: string;
+  }>({
+    totalBytes: 0,
+    trackCount: 0,
+    cacheDir: "",
+  });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<{
+      totalBytes: number;
+      trackCount: number;
+      cacheDir: string;
+    }>("get_offline_cache_stats")
+      .then((res) => {
+        if (!cancelled && res && typeof res.totalBytes === "number") {
+          setOfflineCacheStats(res);
+        }
+      })
+      .catch(() => {
+        // Ignore outside Tauri runtime
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [offlineCacheRevision, cacheNonce, section]);
 
   const displayName = authUser?.name || "Account Google";
   const vibrancyIndex =
@@ -365,16 +408,24 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
     const libraryBytes = new TextEncoder().encode(libraryJson).length;
 
     const tracksCacheBytes = music.streamBytes;
+    const offlineAudioBytes = offlineCacheStats.totalBytes;
     const imagesCacheBytes = palettes.estimatedBytes + music.metadataBytes;
     const lyricsCacheBytes = lyrics.estimatedBytes;
     const totalBytes = Math.max(
       1,
-      tracksCacheBytes + imagesCacheBytes + lyricsCacheBytes + libraryBytes,
+      tracksCacheBytes +
+        offlineAudioBytes +
+        imagesCacheBytes +
+        lyricsCacheBytes +
+        libraryBytes,
     );
 
     return {
       totalBytes,
       tracksCacheBytes,
+      offlineAudioBytes,
+      offlineAudioTracks: offlineCacheStats.trackCount,
+      offlineAudioDir: offlineCacheStats.cacheDir,
       imagesCacheBytes,
       lyricsCacheBytes,
       libraryBytes,
@@ -389,11 +440,12 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
     playlists,
     playStats,
     preferences,
+    offlineCacheStats,
   ]);
 
   const handleExportBackup = () => {
     const payload = {
-      app: "Ippos",
+      app: "IPPOS",
       version: "1.0.0",
       exportedAt: new Date().toISOString(),
       data: {
@@ -401,8 +453,9 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
         recentTracks,
         playlists,
         playStats,
+        downloadedTrackIds,
         preferences,
-        settings: { volume, shuffle, repeat },
+        settings: { volume, shuffle, repeat, autoplayEnabled },
       },
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -473,9 +526,9 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
       >
         <Cpu className="w-3.5 h-3.5 text-accent shrink-0" />
         <span className="hidden sm:inline">
-          Ippos macOS v1.0.0 — Architettura nativa Apple Silicon
+          IPPOS macOS v1.0.0 — Architettura nativa Apple Silicon
         </span>
-        <span className="sm:hidden">Ippos v1.0.0</span>
+        <span className="sm:hidden">IPPOS v1.0.0</span>
       </div>
     </div>
   );
@@ -600,7 +653,7 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
                 <h2 className="text-[20px] font-bold tracking-tight text-white truncate">
                   {authStatus === "authenticated"
                     ? displayName
-                    : "Benvenuto su Ippos"}
+                    : "Benvenuto su IPPOS"}
                 </h2>
 
                 <p className="text-[12.5px] text-indigo-100/80 truncate">
@@ -803,11 +856,35 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
               }}
             >
               {renderListItemCard({
+                icon: <SlidersVertical className="w-4 h-4" />,
+                shape: "clover",
+                badgeBg: "rgb(239 68 68 / 0.2)",
+                badgeFg: "rgb(252 165 165)",
+                title: "Equalizzatore Audio",
+                subtitle: "5 bande parametriche (60 Hz – 12 kHz) e preset salvati",
+                trailing: (
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+                      preferences.equalizer.enabled
+                        ? "bg-emerald-500/15 text-emerald-300"
+                        : "bg-white/[0.06] text-zinc-400"
+                    }`}
+                  >
+                    {preferences.equalizer.enabled
+                      ? preferences.equalizer.preset === "custom"
+                        ? "Custom"
+                        : EQUALIZER_PRESETS[preferences.equalizer.preset].label
+                      : "Bypass"}
+                  </span>
+                ),
+                onClick: () => setSection("equalizer"),
+              })}
+              {renderListItemCard({
                 icon: <Radio className="w-4 h-4" />,
                 shape: "scalloped",
                 badgeBg: "rgb(var(--md-primary-container-rgb))",
                 badgeFg: "rgb(var(--md-accent-primary-rgb))",
-                title: "Ippos Island & Media Player",
+                title: "IPPOS Island & Media Player",
                 subtitle: "Stato bridge macOS, controlli nel notch e notifiche di sistema",
                 trailing: (
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-300">
@@ -834,6 +911,39 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
                 subtitle: "Cronologia di ascolto e chiusura finestra (Tray vs Esci)",
                 onClick: () => setSection("behavior"),
               })}
+              <div className="px-4 py-3.5 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  <ShapedIconBadge
+                    shape="clover"
+                    bgColor="rgb(88 101 242)"
+                    fgColor="#ffffff"
+                    size={40}
+                  >
+                    <Gamepad2 className="w-4 h-4" />
+                  </ShapedIconBadge>
+                  <div className="min-w-0">
+                    <p
+                      className="text-[14px] font-semibold truncate"
+                      style={{ color: "rgb(var(--md-on-surface-rgb))" }}
+                    >
+                      Condividi stato su Discord
+                    </p>
+                    <p
+                      className="text-[12px] truncate"
+                      style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                    >
+                      Mostra brano corrente, artista e copertina su Discord Rich Presence
+                    </p>
+                  </div>
+                </div>
+                <M3ExpressiveSwitch
+                  checked={preferences.discordRichPresenceEnabled}
+                  onChange={(val) =>
+                    updatePreferences({ discordRichPresenceEnabled: val })
+                  }
+                  ariaLabel="Condividi stato su Discord"
+                />
+              </div>
             </div>
           </section>
 
@@ -873,6 +983,59 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
               <div className="px-4 py-3.5 flex flex-wrap items-center justify-between gap-4">
                 <div className="flex items-center gap-3.5 min-w-0">
                   <ShapedIconBadge
+                    shape="clover"
+                    bgColor="rgb(16 185 129 / 0.2)"
+                    fgColor="rgb(110 231 183)"
+                    size={40}
+                  >
+                    <Download className="w-4 h-4" />
+                  </ShapedIconBadge>
+                  <div className="min-w-0">
+                    <p
+                      className="text-[14px] font-semibold"
+                      style={{ color: "rgb(var(--md-on-surface-rgb))" }}
+                    >
+                      Spazio di archiviazione cache
+                    </p>
+                    <p
+                      className="text-[12px] tabular-nums"
+                      style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                    >
+                      {formatBytesReadable(storageStats.offlineAudioBytes)} occupati ·{" "}
+                      {storageStats.offlineAudioTracks}{" "}
+                      {storageStats.offlineAudioTracks === 1
+                        ? "brano offline"
+                        : "brani offline"}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={
+                    storageStats.offlineAudioTracks === 0 &&
+                    storageStats.offlineAudioBytes === 0
+                  }
+                  onClick={() => {
+                    void clearAllDownloadedTracks().then(() =>
+                      setCacheNonce((n) => n + 1),
+                    );
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[12px] font-semibold hover:brightness-110 transition active:scale-95 disabled:opacity-45 disabled:pointer-events-none shrink-0"
+                  style={{
+                    backgroundColor: "rgb(244 63 94 / 0.16)",
+                    color: "#fda4af",
+                    border: "1px solid rgb(244 63 94 / 0.28)",
+                  }}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Svuota cache offline
+                </button>
+              </div>
+
+              <div className="px-4 py-3.5 flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  <ShapedIconBadge
                     shape="scalloped"
                     bgColor="rgb(var(--md-secondary-container-rgb))"
                     fgColor="rgb(var(--md-on-secondary-container-rgb))"
@@ -891,7 +1054,7 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
                       className="text-[12px]"
                       style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
                     >
-                      Esporta o importa i dati locali di Ippos in formato JSON
+                      Esporta o importa i dati locali di IPPOS in formato JSON
                     </p>
                   </div>
                 </div>
@@ -949,7 +1112,7 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
                 badgeBg: "rgb(var(--md-primary-container-rgb))",
                 badgeFg: "rgb(var(--md-accent-primary-rgb))",
                 title: "Aggiornamenti",
-                subtitle: "Ippos è aggiornato all'ultima build macOS",
+                subtitle: "IPPOS è aggiornato all'ultima build macOS",
                 trailing: (
                   <span
                     className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold tabular-nums"
@@ -969,7 +1132,7 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
                 badgeBg: "rgb(var(--md-surface-container-high-rgb))",
                 badgeFg: "rgb(var(--md-on-surface-rgb))",
                 title: "Circa",
-                subtitle: "Ippos macOS · Apple Silicon, licenze e crediti",
+                subtitle: "IPPOS macOS · Apple Silicon, licenze e crediti",
                 onClick: () => setSection("about"),
               })}
             </div>
@@ -1186,6 +1349,15 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
       )}
 
       {/* ============================================================
+          SOTTO-PAGINA: EQUALIZZATORE AUDIO (equalizer)
+         ============================================================ */}
+      {section === "equalizer" && (
+        <div className="space-y-5 at-view-fade">
+          <EqualizerPanel />
+        </div>
+      )}
+
+      {/* ============================================================
           SOTTO-PAGINA: LETTORE E AUDIO (playback)
          ============================================================ */}
       {section === "playback" && (
@@ -1310,6 +1482,25 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
             <div className="pb-4 flex items-center justify-between gap-4">
               <div>
                 <p className="text-[14.5px] font-semibold">
+                  Autoplay / Radio infinita
+                </p>
+                <p
+                  className="text-[12px] mt-0.5"
+                  style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                >
+                  Avvia automaticamente brani consigliati correlati al termine della coda
+                </p>
+              </div>
+              <M3ExpressiveSwitch
+                checked={autoplayEnabled}
+                onChange={(val) => setAutoplayEnabled(val)}
+                ariaLabel="Autoplay e radio infinita"
+              />
+            </div>
+
+            <div className="py-4 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-[14.5px] font-semibold">
                   Riproduci video come audio ufficiale
                 </p>
                 <p
@@ -1361,6 +1552,81 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
                 onChange={(val) => updatePreferences({ preloadNextTrack: val })}
                 ariaLabel="Preload Mode"
               />
+            </div>
+          </div>
+
+          <EqualizerPanel />
+
+          {/* Crossfade / Transizione sfumata */}
+          <div
+            className="rounded-3xl p-5 space-y-3 at-tonal"
+            style={{
+              backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.85)",
+              border: "1px solid rgb(var(--md-outline-rgb) / 0.24)",
+            }}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[14.5px] font-semibold">
+                  Crossfade (transizione sfumata)
+                </p>
+                <p
+                  className="text-[12px] mt-0.5"
+                  style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                >
+                  Sfuma gradualmente la fine del brano corrente con l&apos;inizio del successivo
+                </p>
+              </div>
+              <span
+                className="px-3 py-1 rounded-full text-[11.5px] font-bold tabular-nums shrink-0"
+                style={
+                  preferences.crossfadeSeconds > 0
+                    ? {
+                        backgroundColor: "rgb(var(--md-accent-primary-rgb))",
+                        color: "rgb(var(--md-on-accent-rgb))",
+                      }
+                    : {
+                        backgroundColor: "rgb(var(--md-secondary-container-rgb))",
+                        color: "rgb(var(--md-on-secondary-container-rgb))",
+                      }
+                }
+              >
+                {preferences.crossfadeSeconds === 0
+                  ? "Disattivato"
+                  : `${preferences.crossfadeSeconds}s`}
+              </span>
+            </div>
+
+            <ExpressiveSlider
+              size="md"
+              min={0}
+              max={8}
+              step={1}
+              value={preferences.crossfadeSeconds}
+              ariaLabel="Durata crossfade in secondi"
+              formatTooltip={(v) => (v === 0 ? "Off" : `${Math.round(v)}s`)}
+              onChange={(val) =>
+                updatePreferences({ crossfadeSeconds: Math.round(val) })
+              }
+            />
+
+            <div className="flex items-center justify-between text-[11px] font-medium">
+              {[0, 2, 4, 6, 8].map((sec) => (
+                <button
+                  key={sec}
+                  type="button"
+                  onClick={() => updatePreferences({ crossfadeSeconds: sec })}
+                  className="tabular-nums transition-colors"
+                  style={{
+                    color:
+                      preferences.crossfadeSeconds === sec
+                        ? "rgb(var(--md-accent-primary-rgb))"
+                        : "rgb(var(--md-on-surface-variant-rgb))",
+                  }}
+                >
+                  {sec === 0 ? "Off" : `${sec}s`}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -2137,7 +2403,7 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
 
             <div className="relative z-10 space-y-1">
               <p className="text-[13px] font-medium text-sky-100/80">
-                Ippos sta usando
+                IPPOS sta usando
               </p>
               <p className="text-[38px] font-bold tracking-tight text-white tabular-nums">
                 {formatBytesReadable(storageStats.totalBytes)}
@@ -2147,6 +2413,10 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
             {/* Barra di progresso segmentata a colori */}
             <div className="relative z-10 h-3.5 w-full rounded-full overflow-hidden bg-black/30 flex gap-0.5 p-0.5">
               {[
+                {
+                  bytes: storageStats.offlineAudioBytes,
+                  color: "#38bdf8",
+                },
                 {
                   bytes: storageStats.tracksCacheBytes,
                   color: "#60a5fa",
@@ -2181,11 +2451,16 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
               })}
             </div>
 
-            {/* Legenda 2x2 con pallini sagomati */}
+            {/* Legenda con pallini sagomati */}
             <div className="relative z-10 grid grid-cols-2 gap-3 pt-1">
               {[
                 {
-                  label: "Cache dei brani",
+                  label: "Cache audio offline",
+                  bytes: storageStats.offlineAudioBytes,
+                  color: "#38bdf8",
+                },
+                {
+                  label: "Cache stream URL",
                   bytes: storageStats.tracksCacheBytes,
                   color: "#60a5fa",
                 },
@@ -2251,7 +2526,7 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
                   className="text-[12px] font-mono"
                   style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
                 >
-                  App Support · Ippos · library.json
+                  App Support · IPPOS · library.json
                 </p>
               </div>
             </div>
@@ -2259,6 +2534,60 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
             <WavyBar className="text-accent opacity-65" />
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div
+                className="sm:col-span-3 rounded-2xl px-4 py-3.5 flex flex-wrap items-center justify-between gap-3"
+                style={{
+                  backgroundColor: "rgb(var(--md-surface-container-low-rgb))",
+                  border: "1px solid rgb(56 189 248 / 0.28)",
+                }}
+              >
+                <div className="min-w-0">
+                  <span className="block text-[13.5px] font-semibold">
+                    Spazio di archiviazione cache
+                  </span>
+                  <span
+                    className="block text-[11.5px] mt-0.5 tabular-nums"
+                    style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                  >
+                    {formatBytesReadable(storageStats.offlineAudioBytes)} occupati su disco ·{" "}
+                    {storageStats.offlineAudioTracks}{" "}
+                    {storageStats.offlineAudioTracks === 1
+                      ? "brano scaricato"
+                      : "brani scaricati"}
+                  </span>
+                  {storageStats.offlineAudioDir && (
+                    <span
+                      className="block text-[10.5px] font-mono mt-0.5 truncate max-w-[440px]"
+                      style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                    >
+                      {storageStats.offlineAudioDir}
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={
+                    storageStats.offlineAudioTracks === 0 &&
+                    storageStats.offlineAudioBytes === 0
+                  }
+                  onClick={() => {
+                    void clearAllDownloadedTracks().then(() =>
+                      setCacheNonce((n) => n + 1),
+                    );
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-[12px] font-semibold hover:brightness-110 transition active:scale-95 disabled:opacity-45 disabled:pointer-events-none shrink-0"
+                  style={{
+                    backgroundColor: "rgb(244 63 94 / 0.16)",
+                    color: "#fda4af",
+                    border: "1px solid rgb(244 63 94 / 0.28)",
+                  }}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Svuota cache offline
+                </button>
+              </div>
+
               <button
                 type="button"
                 onClick={() => {
@@ -2358,7 +2687,7 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
             </ShapedIconBadge>
             <div>
               <h2 className="text-[16px] font-bold">
-                Bridge nativo Ippos Island & macOS Media Center
+                Bridge nativo IPPOS Island & macOS Media Center
               </h2>
               <p
                 className="text-[12px]"
@@ -2421,6 +2750,37 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
                 Play/Pause, Seek, Shuffle, Loop attivi
               </p>
             </div>
+          </div>
+
+          <div className="pt-3 border-t border-white/[0.06] flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <ShapedIconBadge
+                shape="clover"
+                bgColor="rgb(88 101 242)"
+                fgColor="#ffffff"
+                size={38}
+              >
+                <Gamepad2 className="w-4 h-4" />
+              </ShapedIconBadge>
+              <div className="min-w-0">
+                <p className="text-[14px] font-semibold">
+                  Condividi stato su Discord
+                </p>
+                <p
+                  className="text-[12px]"
+                  style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                >
+                  Aggiorna automaticamente la tua Discord Rich Presence tramite socket IPC locale
+                </p>
+              </div>
+            </div>
+            <M3ExpressiveSwitch
+              checked={preferences.discordRichPresenceEnabled}
+              onChange={(val) =>
+                updatePreferences({ discordRichPresenceEnabled: val })
+              }
+              ariaLabel="Condividi stato su Discord"
+            />
           </div>
         </div>
       )}
@@ -2593,7 +2953,7 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
               <ShieldCheck className="w-6 h-6" />
             </ShapedIconBadge>
             <div>
-              <h2 className="text-[20px] font-bold">Ippos per macOS</h2>
+              <h2 className="text-[20px] font-bold">IPPOS per macOS</h2>
               <p
                 className="text-[12.5px]"
                 style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
@@ -2616,7 +2976,7 @@ export function SettingsView({ onLogin, onLogout }: SettingsViewProps) {
               style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
             >
               <li>Motore cromatico Material 3 Expressive con modalità OLED Nero Puro</li>
-              <li>Integrazione nativa macOS MediaRemote e bridge Ippos Island</li>
+              <li>Integrazione nativa macOS MediaRemote e bridge IPPOS Island</li>
               <li>Navigazione completa Artisti, Coda drag-and-drop e Testi sincronizzati</li>
               <li>Scorciatoie da tastiera locali e tasti multimediali di sistema</li>
             </ul>

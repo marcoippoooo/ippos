@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Check,
+  CheckCircle2,
   ChevronRight,
   Copy,
   Disc3,
+  Download,
   Heart,
   Info,
   Link2,
@@ -79,6 +81,8 @@ export function TrackContextMenu() {
   const isMuted = usePlayerStore((s) => s.isMuted);
   const likedTracks = usePlayerStore((s) => s.likedTracks);
   const playlists = usePlayerStore((s) => s.playlists);
+  const downloadedTrackIds = usePlayerStore((s) => s.downloadedTrackIds);
+  const downloadingTrackIds = usePlayerStore((s) => s.downloadingTrackIds);
   const authStatus = usePlayerStore((s) => s.authStatus);
   const remotePlaylists = usePlayerStore((s) => s.remotePlaylists);
   const remotePlaylistsStatus = usePlayerStore(
@@ -116,13 +120,17 @@ export function TrackContextMenu() {
   const removeTrackFromRemotePlaylistOptimistic = usePlayerStore(
     (s) => s.removeTrackFromRemotePlaylistOptimistic,
   );
-  const createRemotePlaylistAndAddTrack = usePlayerStore(
-    (s) => s.createRemotePlaylistAndAddTrack,
+  const openCreatePlaylistModal = usePlayerStore(
+    (s) => s.openCreatePlaylistModal,
   );
   const openArtist = usePlayerStore((s) => s.openArtist);
   const setSearchFilter = usePlayerStore((s) => s.setSearchFilter);
   const setSearchQuery = usePlayerStore((s) => s.setSearchQuery);
   const triggerSearchNow = usePlayerStore((s) => s.triggerSearchNow);
+  const downloadTrack = usePlayerStore((s) => s.downloadTrack);
+  const removeDownloadedTrack = usePlayerStore(
+    (s) => s.removeDownloadedTrack,
+  );
 
   const [subView, setSubView] = useState<ContextSubView>("menu");
   const [newPlaylistName, setNewPlaylistName] = useState("");
@@ -153,6 +161,8 @@ export function TrackContextMenu() {
     () => new Set(likedTracks.map((t) => t.id)),
     [likedTracks],
   );
+  const isTrackDownloaded = track ? downloadedTrackIds.includes(track.id) : false;
+  const isTrackDownloading = track ? Boolean(downloadingTrackIds[track.id]) : false;
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -367,22 +377,21 @@ export function TrackContextMenu() {
     const trimmed = newPlaylistName.trim();
     if (!trimmed || creatingRemotePlaylist) return;
 
-    if (isAuthenticated && playlistCreateTarget === "remote") {
-      setCreatingRemotePlaylist(true);
-      try {
-        const ok = await createRemotePlaylistAndAddTrack(trimmed, track);
-        if (ok) {
-          setNewPlaylistName("");
-        }
-      } finally {
-        setCreatingRemotePlaylist(false);
+    const syncRemote = isAuthenticated && playlistCreateTarget === "remote";
+    setCreatingRemotePlaylist(syncRemote);
+    try {
+      const result = await createPlaylist({
+        title: trimmed,
+        privacyStatus: "PRIVATE",
+        syncWithYTMusic: syncRemote,
+        initialTrack: track,
+      });
+      if (result) {
+        setNewPlaylistName("");
       }
-      return;
+    } finally {
+      setCreatingRemotePlaylist(false);
     }
-
-    const id = createPlaylist(trimmed);
-    addTrackToPlaylist(id, track);
-    setNewPlaylistName("");
   };
 
   const bitrateKbps =
@@ -656,6 +665,49 @@ export function TrackContextMenu() {
                   Aggiungi alla coda
                 </span>
               </button>
+
+              <button
+                type="button"
+                disabled={isTrackDownloading}
+                onClick={() => {
+                  if (isTrackDownloaded) {
+                    void removeDownloadedTrack(track.id);
+                  } else {
+                    void downloadTrack(track);
+                  }
+                  closeTrackMenu();
+                }}
+                className="col-span-2 rounded-2xl p-3 flex items-center gap-2.5 text-left hover:brightness-110 disabled:opacity-60 transition at-tonal"
+                style={
+                  isTrackDownloaded
+                    ? {
+                        backgroundColor: "rgb(16 185 129 / 0.14)",
+                        border: "1px solid rgb(52 211 153 / 0.35)",
+                        color: "#a7f3d0",
+                      }
+                    : {
+                        backgroundColor:
+                          "rgb(var(--md-surface-container-rgb) / 0.88)",
+                        border: "1px solid rgb(var(--md-outline-rgb) / 0.22)",
+                        color: "rgb(var(--md-on-surface-rgb))",
+                      }
+                }
+              >
+                {isTrackDownloading ? (
+                  <Loader2 className="w-4 h-4 shrink-0 text-sky-300 animate-spin" />
+                ) : isTrackDownloaded ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                ) : (
+                  <Download className="w-4 h-4 shrink-0 text-accent" />
+                )}
+                <span className="text-[12.5px] font-semibold truncate">
+                  {isTrackDownloading
+                    ? "Download offline in corso..."
+                    : isTrackDownloaded
+                      ? "Rimuovi download"
+                      : "Scarica offline"}
+                </span>
+              </button>
             </div>
 
             {/* Voci navigazione rapida & Dettagli */}
@@ -804,6 +856,36 @@ export function TrackContextMenu() {
                 </button>
               )}
             </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                closeTrackMenu();
+                openCreatePlaylistModal(track);
+              }}
+              className="w-full px-3.5 py-2.5 rounded-2xl flex items-center justify-between gap-2 text-left text-[12.5px] font-semibold hover:brightness-110 transition active:scale-[0.99] at-tonal"
+              style={{
+                backgroundColor: "rgb(var(--md-primary-container-rgb) / 0.85)",
+                border: "1px solid rgb(var(--md-outline-rgb) / 0.25)",
+                color: "rgb(var(--md-on-primary-container-rgb))",
+              }}
+            >
+              <span className="flex items-center gap-2.5 min-w-0">
+                <span
+                  className="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
+                  style={{
+                    backgroundColor: "rgb(var(--md-accent-primary-rgb))",
+                    color: "rgb(var(--md-on-accent-rgb))",
+                  }}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </span>
+                <span className="truncate">Nuova playlist</span>
+              </span>
+              <span className="text-[11px] opacity-80 shrink-0">
+                Con opzioni e privacy
+              </span>
+            </button>
 
             <div className="max-h-64 overflow-y-auto space-y-2.5 pr-0.5">
               {isAuthenticated && (

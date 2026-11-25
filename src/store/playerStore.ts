@@ -1,10 +1,12 @@
+import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { audioEngine } from "../services/audioEngine";
+import { audioEngine, EQUALIZER_PRESETS } from "../services/audioEngine";
 import { clearAuthSession } from "../services/authStorage";
 import { DEFAULT_THEME_PALETTE } from "../services/colorExtractor";
 import {
   DEFAULT_APP_PREFERENCES,
   PersistedLibrary,
+  sanitizeEqualizer,
 } from "../services/libraryStorage";
 import {
   addTrackToRemotePlaylist,
@@ -12,9 +14,12 @@ import {
   createRemotePlaylist,
   fetchRemotePlaylists,
   formatNetworkError,
+  getRadioTracks,
   invalidateAudioStreamCache,
   isAuthExpiredError,
   removeTrackFromRemotePlaylist,
+  resolveAudioStream,
+  seedRemotePlaylistCache,
   setPlaybackAndContentConfig,
   setPreferredAudioFormat,
   setYTMusicAuthCookie,
@@ -31,6 +36,11 @@ import {
   AsyncStatus,
   AuthStatus,
   AuthUser,
+  CreatePlaylistParams,
+  CreatePlaylistResult,
+  EqualizerBands,
+  EqualizerConfig,
+  EqualizerPresetId,
   FeedSection,
   HomeMoodFilter,
   HomePlaylist,
@@ -51,9 +61,15 @@ import {
 
 const MAX_RECENT_TRACKS = 50;
 const MAX_PLAY_STATS = 200;
+const RECENTLY_CREATED_REMOTE_TTL_MS = 90_000;
 
 let inFlightRemotePlaylistsRefresh: Promise<void> | null = null;
 let remoteSyncGeneration = 0;
+let autoplayRequestGen = 0;
+const recentlyCreatedRemotePlaylists = new Map<
+  string,
+  { playlist: RemotePlaylist; createdAt: number }
+>();
 
 function normalizePlaylistKey(playlistId: string): string {
   return playlistId.trim().replace(/^VL/, "");
@@ -170,6 +186,28 @@ function createPlaylistId(): string {
   return `pl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+const EQ_LOCAL_STORAGE_KEY = "ippos.equalizer.v1";
+
+function loadEqualizerFromLocalStorage(): EqualizerConfig | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(EQ_LOCAL_STORAGE_KEY);
+    if (!raw) return null;
+    return sanitizeEqualizer(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function saveEqualizerToLocalStorage(config: EqualizerConfig): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(EQ_LOCAL_STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
 interface PlayerState {
   currentTrack: Track | null;
   currentStreamDetails: StreamTechnicalDetails | null;
@@ -184,11 +222,15 @@ interface PlayerState {
   playRequestId: number;
   queue: Track[];
   originalQueue: Track[] | null;
+  playbackContext: Track[];
   history: Track[];
   likedTracks: Track[];
   recentTracks: Track[];
   playlists: UserPlaylist[];
   playStats: Record<string, TrackPlayStat>;
+  downloadedTrackIds: string[];
+  downloadingTrackIds: Record<string, boolean>;
+  offlineCacheRevision: number;
   libraryHydrated: boolean;
   activeView: ViewMode;
   previousViewBeforeArtist: ViewMode;
@@ -198,12 +240,18 @@ interface PlayerState {
   libraryTab: LibraryTab;
   isQueueOpen: boolean;
   isNowPlayingOpen: boolean;
+  isCinemaMode: boolean;
   isSleepTimerOpen: boolean;
+  isCreatePlaylistModalOpen: boolean;
+  createPlaylistInitialTrack: Track | null;
   contextMenuTrack: Track | null;
+  trackLyricsOffsets: Record<string, number>;
   sleepTimer: SleepTimerState;
   preferences: AppPreferences;
   shuffle: boolean;
   repeat: RepeatMode;
+  autoplayEnabled: boolean;
+  autoplayLoading: boolean;
   themePalette: ThemePalette;
 
   searchQuery: string;
@@ -256,6 +304,8 @@ interface PlayerState {
   playFromQueue: (index: number) => void;
   toggleShuffle: () => void;
   cycleRepeat: () => void;
+  toggleAutoplay: () => void;
+  setAutoplayEnabled: (enabled: boolean) => void;
   setActiveView: (view: ViewMode) => void;
   toggleLyricsView: () => void;
   openSearchView: () => void;
@@ -266,8 +316,14 @@ interface PlayerState {
   setQueueOpen: (open: boolean) => void;
   openNowPlaying: () => void;
   closeNowPlaying: () => void;
+  toggleCinemaMode: () => void;
+  setCinemaMode: (open: boolean) => void;
+  adjustTrackLyricsOffset: (trackId: string, deltaSec: number) => void;
+  resetTrackLyricsOffset: (trackId: string) => void;
   openSleepTimer: () => void;
   closeSleepTimer: () => void;
+  openCreatePlaylistModal: (initialTrack?: Track | null) => void;
+  closeCreatePlaylistModal: () => void;
   openTrackMenu: (track: Track) => void;
   closeTrackMenu: () => void;
   startSleepTimer: (opts: {
@@ -280,15 +336,29 @@ interface PlayerState {
   completeSleepTimer: () => void;
   setCurrentStreamDetails: (details: StreamTechnicalDetails | null) => void;
   updatePreferences: (partial: Partial<AppPreferences>) => void;
+  setEqualizerEnabled: (enabled: boolean) => void;
+  setEqualizerPreset: (preset: Exclude<EqualizerPresetId, "custom">) => void;
+  setEqualizerBand: (bandIndex: number, gainDb: number) => void;
+  resetEqualizer: () => void;
   setThemePalette: (palette: ThemePalette) => void;
 
   hydrateLibrary: (data: PersistedLibrary) => void;
+  setDownloadedTrackIds: (ids: string[]) => void;
+  downloadTrack: (track: Track) => Promise<boolean>;
+  removeDownloadedTrack: (videoId: string) => Promise<boolean>;
+  clearAllDownloadedTracks: () => Promise<void>;
   clearRecentTracks: () => void;
   clearPlayStats: () => void;
-  createPlaylist: (name: string) => string;
+  createPlaylist: (
+    params: CreatePlaylistParams,
+  ) => Promise<CreatePlaylistResult | null>;
   deletePlaylist: (playlistId: string) => void;
   renamePlaylist: (playlistId: string, name: string) => void;
-  addTrackToPlaylist: (playlistId: string, track: Track) => void;
+  addTrackToPlaylist: (
+    playlistId: string,
+    track: Track,
+    options?: { allowDuplicate?: boolean },
+  ) => void;
   removeTrackFromPlaylist: (playlistId: string, trackId: string) => void;
 
   setPlaybackState: (partial: {
@@ -346,6 +416,7 @@ interface PlayerState {
   addTrackToRemotePlaylistOptimistic: (
     playlist: RemotePlaylist,
     track: Track,
+    options?: { allowDuplicate?: boolean },
   ) => Promise<boolean>;
   removeTrackFromRemotePlaylistOptimistic: (
     playlist: RemotePlaylist,
@@ -358,7 +429,47 @@ interface PlayerState {
   resetAuthToGuest: (notice?: string | null) => void;
 }
 
-export const usePlayerStore = create<PlayerState>((set, get) => ({
+export const usePlayerStore = create<PlayerState>((set, get) => {
+  const initialEqualizer =
+    loadEqualizerFromLocalStorage() ?? DEFAULT_APP_PREFERENCES.equalizer;
+  audioEngine.applyEqualizerConfig(initialEqualizer);
+
+  const restartCurrentTrack = () => {
+    const { currentTrack, playRequestId } = get();
+    if (!currentTrack) return;
+
+    audioEngine.resetFade();
+    set({
+      progress: 0,
+      isPlaying: true,
+      playbackStatus: "loading",
+      playbackError: null,
+    });
+
+    void audioEngine.restart().then((ok) => {
+      const latest = get();
+      if (
+        latest.currentTrack?.id !== currentTrack.id ||
+        latest.playRequestId !== playRequestId ||
+        !latest.isPlaying
+      ) {
+        return;
+      }
+
+      if (ok) {
+        set({
+          playbackStatus: "playing",
+          isPlaying: true,
+          playbackError: null,
+        });
+      } else {
+        invalidateAudioStreamCache(currentTrack.id);
+        latest.retryPlayback();
+      }
+    });
+  };
+
+  return {
   currentTrack: null,
   currentStreamDetails: null,
   isPlaying: false,
@@ -372,11 +483,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   playRequestId: 0,
   queue: [],
   originalQueue: null,
+  playbackContext: [],
   history: [],
   likedTracks: [],
   recentTracks: [],
   playlists: [],
   playStats: {},
+  downloadedTrackIds: [],
+  downloadingTrackIds: {},
+  offlineCacheRevision: 0,
   libraryHydrated: false,
   activeView: "home",
   previousViewBeforeArtist: "home",
@@ -386,8 +501,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   libraryTab: "overview",
   isQueueOpen: false,
   isNowPlayingOpen: false,
+  isCinemaMode: false,
   isSleepTimerOpen: false,
+  isCreatePlaylistModalOpen: false,
+  createPlaylistInitialTrack: null,
   contextMenuTrack: null,
+  trackLyricsOffsets: {},
   sleepTimer: {
     active: false,
     endsAt: null,
@@ -396,9 +515,14 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     fadeOut: true,
     waitingForTrackEnd: false,
   },
-  preferences: DEFAULT_APP_PREFERENCES,
+  preferences: {
+    ...DEFAULT_APP_PREFERENCES,
+    equalizer: initialEqualizer,
+  },
   shuffle: false,
   repeat: "off",
+  autoplayEnabled: true,
+  autoplayLoading: false,
   themePalette: DEFAULT_THEME_PALETTE,
 
   searchQuery: "",
@@ -430,6 +554,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   remotePlaylistMutatingKeys: {},
 
   playTrack: (track, contextTracks) => {
+    autoplayRequestGen += 1;
     const {
       currentTrack,
       history,
@@ -440,9 +565,37 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       shuffle,
       queue,
       originalQueue,
+      playbackContext,
       preferences,
     } = get();
+    if (get().autoplayLoading) {
+      set({ autoplayLoading: false });
+    }
     if (currentTrack?.id === track.id && playbackStatus !== "error") {
+      if (audioEngine.isEnded()) {
+        if (contextTracks && contextTracks.length > 0) {
+          const idx = contextTracks.findIndex((t) => t.id === track.id);
+          const nextPlaybackContext =
+            idx >= 0 ? [...contextTracks] : [track, ...contextTracks];
+          const orderedRest =
+            idx >= 0
+              ? shuffle
+                ? [
+                    ...contextTracks.slice(idx + 1),
+                    ...contextTracks.slice(0, idx),
+                  ]
+                : contextTracks.slice(idx + 1)
+              : contextTracks.filter((t) => t.id !== track.id);
+
+          set({
+            playbackContext: nextPlaybackContext,
+            originalQueue: shuffle ? orderedRest : null,
+            queue: shuffle ? shuffleArray(orderedRest) : orderedRest,
+          });
+        }
+        restartCurrentTrack();
+        return;
+      }
       get().togglePlay();
       return;
     }
@@ -457,9 +610,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
     let nextQueue = queue;
     let nextOriginalQueue = originalQueue;
+    let nextPlaybackContext = playbackContext;
 
     if (contextTracks && contextTracks.length > 0) {
       const idx = contextTracks.findIndex((t) => t.id === track.id);
+      nextPlaybackContext =
+        idx >= 0 ? [...contextTracks] : [track, ...contextTracks];
       const orderedRest =
         idx >= 0
           ? shuffle
@@ -477,6 +633,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         nextOriginalQueue = null;
         nextQueue = orderedRest;
       }
+    } else if (!playbackContext.some((t) => t.id === track.id)) {
+      nextPlaybackContext = [track, ...queue];
     }
 
     audioEngine.resetFade();
@@ -485,6 +643,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentStreamDetails: null,
       queue: nextQueue,
       originalQueue: nextOriginalQueue,
+      playbackContext: nextPlaybackContext,
       history: nextHistory,
       recentTracks: preferences.saveListeningHistory
         ? recordRecentTrack(recentTracks, track)
@@ -534,8 +693,19 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return;
     }
 
+    if (audioEngine.isEnded()) {
+      audioEngine.seek(0);
+      set({ progress: 0 });
+    }
+
     set({ isPlaying: true, playbackError: null });
     void audioEngine.play().catch((err: unknown) => {
+      const latest = get();
+      if (latest.currentTrack && latest.playbackStatus !== "error") {
+        invalidateAudioStreamCache(latest.currentTrack.id);
+        latest.retryPlayback();
+        return;
+      }
       set({
         isPlaying: false,
         playbackStatus: "error",
@@ -548,9 +718,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   pausePlayback: () => {
+    autoplayRequestGen += 1;
     audioEngine.pause();
     audioEngine.resetFade();
     set((state) => ({
+      autoplayLoading: false,
       isPlaying: false,
       playbackStatus:
         state.playbackStatus === "loading" ? "paused" : state.playbackStatus,
@@ -589,9 +761,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   playNext: () => {
+    autoplayRequestGen += 1;
     const {
       queue,
       originalQueue,
+      playbackContext,
       currentTrack,
       history,
       recentTracks,
@@ -601,15 +775,35 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       playRequestId,
       preferences,
     } = get();
+    if (get().autoplayLoading) {
+      set({ autoplayLoading: false });
+    }
     if (queue.length === 0) {
-      if (repeat === "all" && history.length > 0) {
-        const reversed = [...history].reverse();
-        const orderedCycle =
-          currentTrack && !reversed.some((t) => t.id === currentTrack.id)
-            ? [...reversed, currentTrack]
-            : reversed;
+      if (repeat === "all") {
+        let orderedCycle: Track[] = [];
+        if (playbackContext.length > 0) {
+          orderedCycle = playbackContext;
+        } else if (history.length > 0) {
+          const seen = new Set<string>();
+          for (const item of [...history].reverse()) {
+            if (!seen.has(item.id)) {
+              seen.add(item.id);
+              orderedCycle.push(item);
+            }
+          }
+          if (currentTrack && !seen.has(currentTrack.id)) {
+            orderedCycle.push(currentTrack);
+          }
+        } else if (currentTrack) {
+          orderedCycle = [currentTrack];
+        }
 
         if (orderedCycle.length === 0) return;
+
+        if (orderedCycle.length === 1) {
+          restartCurrentTrack();
+          return;
+        }
 
         let nextQueue: Track[];
         let nextOriginal: Track[] | null = null;
@@ -617,6 +811,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
         if (shuffle) {
           const shuffled = shuffleArray(orderedCycle);
+          if (shuffled[0].id === currentTrack?.id && shuffled.length > 1) {
+            [shuffled[0], shuffled[1]] = [shuffled[1], shuffled[0]];
+          }
           first = shuffled[0];
           nextQueue = shuffled.slice(1);
           nextOriginal = orderedCycle.filter((t) => t.id !== first.id);
@@ -625,13 +822,22 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           nextQueue = orderedCycle.slice(1);
         }
 
+        const nextHistory =
+          currentTrack && currentTrack.id !== first.id
+            ? [
+                currentTrack,
+                ...history.filter((t) => t.id !== currentTrack.id),
+              ].slice(0, 30)
+            : history;
+
         audioEngine.resetFade();
         set({
           currentTrack: first,
           currentStreamDetails: null,
           queue: nextQueue,
           originalQueue: nextOriginal,
-          history: [],
+          playbackContext: orderedCycle,
+          history: nextHistory,
           recentTracks: preferences.saveListeningHistory
             ? recordRecentTrack(recentTracks, first)
             : recentTracks,
@@ -684,6 +890,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   playPrevious: () => {
+    autoplayRequestGen += 1;
     const {
       history,
       currentTrack,
@@ -695,6 +902,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       playRequestId,
       preferences,
     } = get();
+    if (get().autoplayLoading) {
+      set({ autoplayLoading: false });
+    }
     if (!currentTrack) return;
 
     if (progress > 3 || history.length === 0) {
@@ -728,32 +938,120 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   handleTrackEnded: () => {
-    const { repeat, queue, history, sleepTimer } = get();
+    const {
+      currentTrack,
+      repeat,
+      queue,
+      history,
+      playbackContext,
+      sleepTimer,
+      autoplayEnabled,
+      playRequestId,
+    } = get();
     if (sleepTimer.active && sleepTimer.waitingForTrackEnd) {
       get().completeSleepTimer();
       return;
     }
 
-    if (repeat === "one") {
-      audioEngine.seek(0);
-      set({ progress: 0, isPlaying: true, playbackStatus: "playing" });
-      void audioEngine.play();
+    if (!currentTrack) {
+      set({ isPlaying: false, playbackStatus: "paused", progress: 0 });
       return;
     }
 
-    if (queue.length > 0 || (repeat === "all" && history.length > 0)) {
+    if (repeat === "one") {
+      restartCurrentTrack();
+      return;
+    }
+
+    if (queue.length > 0) {
       get().playNext();
       return;
     }
 
-    if (repeat === "all" && get().currentTrack) {
-      audioEngine.seek(0);
-      set({ progress: 0, isPlaying: true, playbackStatus: "playing" });
-      void audioEngine.play();
+    if (repeat === "all") {
+      if (
+        playbackContext.length > 1 ||
+        (playbackContext.length === 0 && history.length > 0)
+      ) {
+        get().playNext();
+      } else {
+        restartCurrentTrack();
+      }
       return;
     }
 
-    set({ isPlaying: false, playbackStatus: "paused" });
+    if (autoplayEnabled) {
+      if (get().autoplayLoading) return;
+      const reqGen = ++autoplayRequestGen;
+      const expectedPlayRequestId = playRequestId;
+      const endedTrack = currentTrack;
+
+      set({
+        autoplayLoading: true,
+        playbackStatus: "loading",
+        playbackError: null,
+      });
+
+      void (async () => {
+        const stopCleanly = () => {
+          audioEngine.pause();
+          audioEngine.resetFade();
+          audioEngine.seek(0);
+          set({
+            autoplayLoading: false,
+            isPlaying: false,
+            playbackStatus: "paused",
+            progress: 0,
+          });
+        };
+
+        try {
+          const radioTracks = await getRadioTracks(endedTrack.id);
+          const latest = get();
+          if (
+            reqGen !== autoplayRequestGen ||
+            !latest.autoplayEnabled ||
+            latest.playRequestId !== expectedPlayRequestId ||
+            latest.currentTrack?.id !== endedTrack.id ||
+            latest.queue.length > 0 ||
+            latest.repeat !== "off"
+          ) {
+            if (reqGen === autoplayRequestGen && latest.autoplayLoading) {
+              set({ autoplayLoading: false });
+            }
+            return;
+          }
+
+          const recentIds = new Set(latest.history.slice(0, 12).map((t) => t.id));
+          recentIds.add(endedTrack.id);
+          const freshCandidates = radioTracks.filter((t) => !recentIds.has(t.id));
+          const candidates =
+            freshCandidates.length > 0
+              ? freshCandidates
+              : radioTracks.filter((t) => t.id !== endedTrack.id);
+
+          if (candidates.length > 0) {
+            set({ autoplayLoading: false });
+            get().playTrack(candidates[0], candidates);
+            useToastStore
+              .getState()
+              .showToast(`Radio infinita · ${candidates[0].title}`);
+            return;
+          }
+
+          stopCleanly();
+        } catch {
+          if (reqGen !== autoplayRequestGen) return;
+          stopCleanly();
+        }
+      })();
+      return;
+    }
+
+    audioEngine.pause();
+    audioEngine.resetFade();
+    audioEngine.seek(0);
+    set({ isPlaying: false, playbackStatus: "paused", progress: 0 });
   },
 
   toggleLike: (track) =>
@@ -767,24 +1065,48 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }),
 
   addToQueue: (track) => {
-    set((state) => ({
-      queue: [...state.queue, track],
-      originalQueue:
-        state.originalQueue !== null
-          ? [...state.originalQueue, track]
-          : null,
-    }));
+    set((state) => {
+      const baseCtx =
+        state.playbackContext.length > 0
+          ? state.playbackContext
+          : state.currentTrack
+            ? [state.currentTrack]
+            : [];
+      const nextCtx = baseCtx.some((t) => t.id === track.id)
+        ? baseCtx
+        : [...baseCtx, track];
+      return {
+        queue: [...state.queue, track],
+        originalQueue:
+          state.originalQueue !== null
+            ? [...state.originalQueue, track]
+            : null,
+        playbackContext: nextCtx,
+      };
+    });
     useToastStore.getState().showToast(`Aggiunto alla coda: ${track.title}`);
   },
 
   enqueueNext: (track) => {
-    set((state) => ({
-      queue: [track, ...state.queue],
-      originalQueue:
-        state.originalQueue !== null
-          ? [track, ...state.originalQueue]
-          : null,
-    }));
+    set((state) => {
+      const baseCtx =
+        state.playbackContext.length > 0
+          ? state.playbackContext
+          : state.currentTrack
+            ? [state.currentTrack]
+            : [];
+      const nextCtx = baseCtx.some((t) => t.id === track.id)
+        ? baseCtx
+        : [...baseCtx, track];
+      return {
+        queue: [track, ...state.queue],
+        originalQueue:
+          state.originalQueue !== null
+            ? [track, ...state.originalQueue]
+            : null,
+        playbackContext: nextCtx,
+      };
+    });
     useToastStore
       .getState()
       .showToast(`In riproduzione dopo: ${track.title}`);
@@ -792,13 +1114,25 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   addTracksToQueue: (tracks, sourceLabel) => {
     if (tracks.length === 0) return;
-    set((state) => ({
-      queue: [...state.queue, ...tracks],
-      originalQueue:
-        state.originalQueue !== null
-          ? [...state.originalQueue, ...tracks]
-          : null,
-    }));
+    set((state) => {
+      const baseCtx =
+        state.playbackContext.length > 0
+          ? state.playbackContext
+          : state.currentTrack
+            ? [state.currentTrack]
+            : [];
+      const existingIds = new Set(baseCtx.map((t) => t.id));
+      const newForCtx = tracks.filter((t) => !existingIds.has(t.id));
+      return {
+        queue: [...state.queue, ...tracks],
+        originalQueue:
+          state.originalQueue !== null
+            ? [...state.originalQueue, ...tracks]
+            : null,
+        playbackContext:
+          newForCtx.length > 0 ? [...baseCtx, ...newForCtx] : baseCtx,
+      };
+    });
     const msg =
       tracks.length === 1
         ? `Aggiunto alla coda: ${tracks[0].title}`
@@ -812,6 +1146,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     set((state) => ({
       originalQueue: state.shuffle ? [...tracks] : null,
       queue: state.shuffle ? shuffleArray(tracks) : tracks,
+      playbackContext: state.currentTrack
+        ? [
+            state.currentTrack,
+            ...tracks.filter((t) => t.id !== state.currentTrack!.id),
+          ]
+        : [...tracks],
     })),
 
   removeFromQueue: (index) =>
@@ -822,9 +1162,14 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         state.originalQueue !== null && removed
           ? removeFirstById(state.originalQueue, removed.id)
           : state.originalQueue;
+      const nextPlaybackContext =
+        removed && removed.id !== state.currentTrack?.id
+          ? removeFirstById(state.playbackContext, removed.id)
+          : state.playbackContext;
       return {
         queue: nextQueue,
         originalQueue: nextOriginalQueue,
+        playbackContext: nextPlaybackContext,
       };
     }),
 
@@ -846,9 +1191,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return { queue: next };
     }),
 
-  clearQueue: () => set({ queue: [], originalQueue: null }),
+  clearQueue: () =>
+    set((state) => ({
+      queue: [],
+      originalQueue: null,
+      playbackContext: state.currentTrack ? [state.currentTrack] : [],
+    })),
 
   playFromQueue: (index) => {
+    autoplayRequestGen += 1;
     const {
       queue,
       originalQueue,
@@ -859,6 +1210,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       playRequestId,
       preferences,
     } = get();
+    if (get().autoplayLoading) {
+      set({ autoplayLoading: false });
+    }
     const target = queue[index];
     if (!target) return;
     const skipped = queue.slice(0, index);
@@ -926,7 +1280,34 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return { repeat: next };
     }),
 
-  setActiveView: (activeView) => set({ activeView }),
+  toggleAutoplay: () =>
+    set((state) => {
+      const next = !state.autoplayEnabled;
+      if (!next) {
+        autoplayRequestGen += 1;
+      }
+      return {
+        autoplayEnabled: next,
+        autoplayLoading: next ? state.autoplayLoading : false,
+      };
+    }),
+
+  setAutoplayEnabled: (enabled) =>
+    set((state) => {
+      if (!enabled) {
+        autoplayRequestGen += 1;
+      }
+      return {
+        autoplayEnabled: enabled,
+        autoplayLoading: enabled ? state.autoplayLoading : false,
+      };
+    }),
+
+  setActiveView: (activeView) =>
+    set((state) => ({
+      activeView,
+      isCinemaMode: activeView === "lyrics" ? state.isCinemaMode : false,
+    })),
 
   toggleLyricsView: () =>
     set((state) => {
@@ -936,6 +1317,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           activeView:
             back === "lyrics" || back === "search" ? "home" : back,
           isNowPlayingOpen: false,
+          isCinemaMode: false,
         };
       }
       const saved =
@@ -962,8 +1344,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           : state.activeView,
       activeView: "search",
       isNowPlayingOpen: false,
+      isCinemaMode: false,
       contextMenuTrack: null,
       isSleepTimerOpen: false,
+      isCreatePlaylistModalOpen: false,
+      createPlaylistInitialTrack: null,
     })),
 
   openArtist: (artist) => {
@@ -980,7 +1365,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           : state.activeView,
       activeView: "artist",
       isNowPlayingOpen: false,
+      isCinemaMode: false,
       contextMenuTrack: null,
+      isCreatePlaylistModalOpen: false,
+      createPlaylistInitialTrack: null,
       searchQuery: "",
       searchResults: [],
       searchArtists: [],
@@ -1006,13 +1394,56 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   openNowPlaying: () =>
     set((state) => ({
       isNowPlayingOpen: state.currentTrack !== null,
+      isCinemaMode: false,
     })),
 
   closeNowPlaying: () => set({ isNowPlayingOpen: false }),
 
+  toggleCinemaMode: () =>
+    set((state) => ({ isCinemaMode: !state.isCinemaMode })),
+
+  setCinemaMode: (isCinemaMode) => set({ isCinemaMode }),
+
+  adjustTrackLyricsOffset: (trackId, deltaSec) =>
+    set((state) => {
+      if (!trackId) return state;
+      const prev = state.trackLyricsOffsets[trackId] ?? 0;
+      const clamped = Math.max(
+        -10,
+        Math.min(10, Math.round((prev + deltaSec) * 10) / 10),
+      );
+      const nextMap = { ...state.trackLyricsOffsets };
+      if (clamped === 0) {
+        delete nextMap[trackId];
+      } else {
+        nextMap[trackId] = clamped;
+      }
+      return { trackLyricsOffsets: nextMap };
+    }),
+
+  resetTrackLyricsOffset: (trackId) =>
+    set((state) => {
+      if (!trackId || !(trackId in state.trackLyricsOffsets)) return state;
+      const nextMap = { ...state.trackLyricsOffsets };
+      delete nextMap[trackId];
+      return { trackLyricsOffsets: nextMap };
+    }),
+
   openSleepTimer: () => set({ isSleepTimerOpen: true }),
 
   closeSleepTimer: () => set({ isSleepTimerOpen: false }),
+
+  openCreatePlaylistModal: (initialTrack = null) =>
+    set({
+      isCreatePlaylistModalOpen: true,
+      createPlaylistInitialTrack: initialTrack ?? null,
+    }),
+
+  closeCreatePlaylistModal: () =>
+    set({
+      isCreatePlaylistModalOpen: false,
+      createPlaylistInitialTrack: null,
+    }),
 
   openTrackMenu: (contextMenuTrack) => set({ contextMenuTrack }),
 
@@ -1085,6 +1516,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         contentLang: next.contentLang,
         contentCountry: next.contentCountry,
       });
+      if (partial.equalizer) {
+        audioEngine.applyEqualizerConfig(next.equalizer);
+        saveEqualizerToLocalStorage(next.equalizer);
+      }
       if (
         partial.preferredAudioFormat &&
         partial.preferredAudioFormat !== state.preferences.preferredAudioFormat
@@ -1093,6 +1528,76 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         invalidateAudioStreamCache();
       }
       return { preferences: next };
+    }),
+
+  setEqualizerEnabled: (enabled) =>
+    set((state) => {
+      const nextEqualizer = {
+        ...state.preferences.equalizer,
+        enabled,
+      };
+      audioEngine.applyEqualizerConfig(nextEqualizer);
+      saveEqualizerToLocalStorage(nextEqualizer);
+      return {
+        preferences: {
+          ...state.preferences,
+          equalizer: nextEqualizer,
+        },
+      };
+    }),
+
+  setEqualizerPreset: (preset) =>
+    set((state) => {
+      const presetBands = [...EQUALIZER_PRESETS[preset].bands] as EqualizerBands;
+      const nextEqualizer = {
+        ...state.preferences.equalizer,
+        preset,
+        bands: presetBands,
+      };
+      audioEngine.applyEqualizerConfig(nextEqualizer);
+      saveEqualizerToLocalStorage(nextEqualizer);
+      return {
+        preferences: {
+          ...state.preferences,
+          equalizer: nextEqualizer,
+        },
+      };
+    }),
+
+  setEqualizerBand: (bandIndex, gainDb) =>
+    set((state) => {
+      if (bandIndex < 0 || bandIndex >= 5) return state;
+      audioEngine.setEqualizerBandGain(bandIndex, gainDb);
+      const synced = audioEngine.getEqualizerConfig();
+      const nextEqualizer = {
+        ...state.preferences.equalizer,
+        preset: synced.preset,
+        bands: synced.bands,
+      };
+      saveEqualizerToLocalStorage(nextEqualizer);
+      return {
+        preferences: {
+          ...state.preferences,
+          equalizer: nextEqualizer,
+        },
+      };
+    }),
+
+  resetEqualizer: () =>
+    set((state) => {
+      const nextEqualizer = {
+        ...state.preferences.equalizer,
+        preset: "flat" as const,
+        bands: [...EQUALIZER_PRESETS.flat.bands] as EqualizerBands,
+      };
+      audioEngine.applyEqualizerConfig(nextEqualizer);
+      saveEqualizerToLocalStorage(nextEqualizer);
+      return {
+        preferences: {
+          ...state.preferences,
+          equalizer: nextEqualizer,
+        },
+      };
     }),
 
   setThemePalette: (themePalette) => set({ themePalette }),
@@ -1107,38 +1612,257 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       contentCountry: data.preferences.contentCountry,
     });
     setPreferredAudioFormat(data.preferences.preferredAudioFormat);
+    audioEngine.applyEqualizerConfig(data.preferences.equalizer);
+    saveEqualizerToLocalStorage(data.preferences.equalizer);
     set({
       likedTracks: data.likedTracks,
       recentTracks: data.recentTracks,
       playlists: data.playlists,
       playStats: data.playStats,
+      downloadedTrackIds: data.downloadedTrackIds,
       preferences: data.preferences,
       volume: data.settings.volume,
       isMuted: data.settings.volume === 0,
       shuffle: data.settings.shuffle,
       repeat: data.settings.repeat,
+      autoplayEnabled: data.settings.autoplayEnabled,
       libraryHydrated: true,
     });
+  },
+
+  setDownloadedTrackIds: (ids) =>
+    set({
+      downloadedTrackIds: Array.from(new Set(ids)),
+      offlineCacheRevision: get().offlineCacheRevision + 1,
+    }),
+
+  downloadTrack: async (track) => {
+    const state = get();
+    if (!track.id) return false;
+    if (state.downloadingTrackIds[track.id]) return false;
+
+    try {
+      const alreadyOnDisk = await invoke<boolean>("is_audio_cached", {
+        videoId: track.id,
+      });
+      if (alreadyOnDisk) {
+        set((s) => ({
+          downloadedTrackIds: s.downloadedTrackIds.includes(track.id)
+            ? s.downloadedTrackIds
+            : [...s.downloadedTrackIds, track.id],
+          offlineCacheRevision: s.offlineCacheRevision + 1,
+        }));
+        useToastStore
+          .getState()
+          .showToast(`"${track.title}" è già disponibile offline`);
+        return true;
+      }
+    } catch {
+      useToastStore
+        .getState()
+        .showToast("Download offline disponibile solo nell'app desktop IPPOS");
+      return false;
+    }
+
+    set((s) => ({
+      downloadingTrackIds: {
+        ...s.downloadingTrackIds,
+        [track.id]: true,
+      },
+    }));
+
+    try {
+      const resolved = await resolveAudioStream(track.id);
+      await invoke<number>("download_audio_to_cache", {
+        videoId: track.id,
+        url: resolved.url,
+        userAgent: resolved.userAgent,
+      });
+      set((s) => ({
+        downloadedTrackIds: s.downloadedTrackIds.includes(track.id)
+          ? s.downloadedTrackIds
+          : [...s.downloadedTrackIds, track.id],
+        offlineCacheRevision: s.offlineCacheRevision + 1,
+      }));
+      useToastStore
+        .getState()
+        .showToast(`Brano scaricato offline: "${track.title}"`);
+      return true;
+    } catch (err) {
+      useToastStore
+        .getState()
+        .showToast(
+          `Download offline non riuscito: ${formatNetworkError(err)}`,
+          3400,
+        );
+      return false;
+    } finally {
+      set((s) => {
+        const next = { ...s.downloadingTrackIds };
+        delete next[track.id];
+        return { downloadingTrackIds: next };
+      });
+    }
+  },
+
+  removeDownloadedTrack: async (videoId) => {
+    if (!videoId) return false;
+    try {
+      await invoke<boolean>("remove_cached_audio", { videoId });
+    } catch {
+      // Fallback: clean local list even if file already missing
+    }
+    set((s) => ({
+      downloadedTrackIds: s.downloadedTrackIds.filter((id) => id !== videoId),
+      offlineCacheRevision: s.offlineCacheRevision + 1,
+    }));
+    useToastStore
+      .getState()
+      .showToast("Download offline rimosso");
+    return true;
+  },
+
+  clearAllDownloadedTracks: async () => {
+    try {
+      await invoke("clear_offline_audio_cache");
+    } catch {
+      // Ignore outside Tauri runtime
+    }
+    set((s) => ({
+      downloadedTrackIds: [],
+      offlineCacheRevision: s.offlineCacheRevision + 1,
+    }));
+    useToastStore
+      .getState()
+      .showToast("Cache audio offline svuotata");
   },
 
   clearRecentTracks: () => set({ recentTracks: [] }),
 
   clearPlayStats: () => set({ playStats: {} }),
 
-  createPlaylist: (name) => {
-    const trimmed = name.trim();
+  createPlaylist: async ({
+    title,
+    description,
+    privacyStatus = "PRIVATE",
+    syncWithYTMusic = true,
+    initialTrack,
+  }) => {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) return null;
+    const trimmedDescription = description?.trim() || undefined;
+
+    if (syncWithYTMusic && get().authStatus === "authenticated") {
+      try {
+        const remoteId = await createRemotePlaylist(
+          trimmedTitle,
+          trimmedDescription,
+          privacyStatus,
+          initialTrack ? [initialTrack.id] : undefined,
+        );
+        const cleanId = normalizePlaylistKey(remoteId);
+        const createdRemote: RemotePlaylist = {
+          id: cleanId,
+          title: trimmedTitle,
+          subtitle: trimmedDescription || "Playlist YouTube Music",
+          ...(trimmedDescription ? { description: trimmedDescription } : {}),
+          privacyStatus,
+          cover:
+            initialTrack?.cover && !initialTrack.cover.startsWith("data:")
+              ? initialTrack.cover
+              : "",
+          trackCount: initialTrack ? "1 brano" : "0 brani",
+          isLikedSongs: false,
+          isRemote: true,
+        };
+
+        recentlyCreatedRemotePlaylists.set(cleanId, {
+          playlist: createdRemote,
+          createdAt: Date.now(),
+        });
+        seedRemotePlaylistCache(cleanId, initialTrack ? [initialTrack] : []);
+
+        set((state) => {
+          const existingWithoutNew = state.remotePlaylists.filter(
+            (pl) => normalizePlaylistKey(pl.id) !== cleanId,
+          );
+          const likedIdx = existingWithoutNew.findIndex(
+            (pl) => pl.isLikedSongs || normalizePlaylistKey(pl.id) === "LM",
+          );
+          const nextRemotePlaylists =
+            likedIdx >= 0
+              ? [
+                  ...existingWithoutNew.slice(0, likedIdx + 1),
+                  createdRemote,
+                  ...existingWithoutNew.slice(likedIdx + 1),
+                ]
+              : [createdRemote, ...existingWithoutNew];
+
+          return {
+            remotePlaylists: nextRemotePlaylists,
+            remotePlaylistsStatus: "success",
+            remotePlaylistsError: null,
+            remotePlaylistTrackIds: {
+              ...state.remotePlaylistTrackIds,
+              [cleanId]: initialTrack ? [initialTrack.id] : [],
+            },
+          };
+        });
+
+        useToastStore
+          .getState()
+          .showToast(
+            initialTrack
+              ? `Playlist "${createdRemote.title}" creata su YouTube Music con "${initialTrack.title}"`
+              : `Playlist "${createdRemote.title}" creata su YouTube Music`,
+          );
+        return { id: cleanId, isRemote: true };
+      } catch (err: unknown) {
+        if (isAuthExpiredError(err)) {
+          void clearAuthSession().catch(() => undefined);
+          setYTMusicAuthCookie(null);
+          get().resetAuthToGuest(
+            "Sessione scaduta, effettua nuovamente l'accesso",
+          );
+          useToastStore
+            .getState()
+            .showToast(
+              "Sessione YouTube Music scaduta. Accedi di nuovo.",
+              3600,
+            );
+        } else {
+          useToastStore
+            .getState()
+            .showToast(
+              `Impossibile creare la playlist: ${formatNetworkError(err)}`,
+              3600,
+            );
+        }
+        return null;
+      }
+    }
+
     const id = createPlaylistId();
-    if (!trimmed) return id;
     const nextPlaylist: UserPlaylist = {
       id,
-      name: trimmed,
+      name: trimmedTitle,
+      ...(trimmedDescription ? { description: trimmedDescription } : {}),
+      privacyStatus,
+      isRemote: false,
       createdAt: Date.now(),
-      tracks: [],
+      tracks: initialTrack ? [initialTrack] : [],
     };
     set((state) => ({
       playlists: [nextPlaylist, ...state.playlists],
     }));
-    return id;
+    useToastStore
+      .getState()
+      .showToast(
+        initialTrack
+          ? `Playlist locale "${nextPlaylist.name}" creata con "${initialTrack.title}"`
+          : `Playlist locale "${nextPlaylist.name}" creata`,
+      );
+    return { id, isRemote: false };
   },
 
   deletePlaylist: (playlistId) =>
@@ -1156,12 +1880,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }));
   },
 
-  addTrackToPlaylist: (playlistId, track) => {
+  addTrackToPlaylist: (playlistId, track, options) => {
     let addedPlaylistName: string | null = null;
+    const allowDuplicate = options?.allowDuplicate === true;
     set((state) => ({
       playlists: state.playlists.map((pl) => {
         if (pl.id !== playlistId) return pl;
-        if (pl.tracks.some((t) => t.id === track.id)) return pl;
+        if (!allowDuplicate && pl.tracks.some((t) => t.id === track.id)) return pl;
         addedPlaylistName = pl.name;
         return { ...pl, tracks: [...pl.tracks, track] };
       }),
@@ -1360,8 +2085,75 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         ) {
           return;
         }
+
+        const existingByKey = new Map<string, RemotePlaylist>();
+        for (const existing of get().remotePlaylists) {
+          const key = normalizePlaylistKey(existing.id);
+          if (key && !existingByKey.has(key)) {
+            existingByKey.set(key, existing);
+          }
+        }
+
+        const dedupedByKey = new Map<string, RemotePlaylist>();
+        for (const remote of playlists) {
+          const key = normalizePlaylistKey(remote.id);
+          if (!key || dedupedByKey.has(key)) continue;
+          const prev = existingByKey.get(key);
+          dedupedByKey.set(key, {
+            ...remote,
+            isRemote: true,
+            ...(remote.description || prev?.description
+              ? { description: remote.description ?? prev?.description }
+              : {}),
+            ...(remote.privacyStatus || prev?.privacyStatus
+              ? { privacyStatus: remote.privacyStatus ?? prev?.privacyStatus }
+              : {}),
+          });
+        }
+
+        const now = Date.now();
+        const pendingRecent: RemotePlaylist[] = [];
+        for (const [key, entry] of recentlyCreatedRemotePlaylists.entries()) {
+          if (now - entry.createdAt > RECENTLY_CREATED_REMOTE_TTL_MS) {
+            recentlyCreatedRemotePlaylists.delete(key);
+            continue;
+          }
+          const fetched = dedupedByKey.get(key);
+          if (fetched) {
+            dedupedByKey.set(key, {
+              ...fetched,
+              isRemote: true,
+              ...(entry.playlist.description && !fetched.description
+                ? { description: entry.playlist.description }
+                : {}),
+              ...(entry.playlist.privacyStatus && !fetched.privacyStatus
+                ? { privacyStatus: entry.playlist.privacyStatus }
+                : {}),
+            });
+            recentlyCreatedRemotePlaylists.delete(key);
+          } else {
+            pendingRecent.push(entry.playlist);
+          }
+        }
+
+        const mergedList = Array.from(dedupedByKey.values());
+        let finalRemotePlaylists = mergedList;
+        if (pendingRecent.length > 0) {
+          const likedIdx = mergedList.findIndex(
+            (pl) => pl.isLikedSongs || normalizePlaylistKey(pl.id) === "LM",
+          );
+          finalRemotePlaylists =
+            likedIdx >= 0
+              ? [
+                  ...mergedList.slice(0, likedIdx + 1),
+                  ...pendingRecent,
+                  ...mergedList.slice(likedIdx + 1),
+                ]
+              : [...pendingRecent, ...mergedList];
+        }
+
         set({
-          remotePlaylists: playlists,
+          remotePlaylists: finalRemotePlaylists,
           remotePlaylistsStatus: "success",
           remotePlaylistsError: null,
         });
@@ -1399,7 +2191,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     return task;
   },
 
-  addTrackToRemotePlaylistOptimistic: async (playlist, track) => {
+  addTrackToRemotePlaylistOptimistic: async (playlist, track, options) => {
     const cleanId = normalizePlaylistKey(playlist.id);
     if (!cleanId || get().authStatus !== "authenticated") return false;
 
@@ -1437,7 +2229,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     });
 
     try {
-      await addTrackToRemotePlaylist(cleanId, track.id);
+      await addTrackToRemotePlaylist(cleanId, track.id, {
+        allowDuplicate: options?.allowDuplicate,
+      });
       clearRemotePlaylistCache(cleanId);
       set((state) => {
         const nextMutating = { ...state.remotePlaylistMutatingKeys };
@@ -1573,70 +2367,19 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   createRemotePlaylistAndAddTrack: async (title, track) => {
-    const trimmed = title.trim();
-    if (!trimmed || get().authStatus !== "authenticated") return false;
-
-    try {
-      const created = await createRemotePlaylist(trimmed, [track.id]);
-      set((state) => {
-        const existingWithoutNew = state.remotePlaylists.filter(
-          (pl) => pl.id !== created.id,
-        );
-        const likedIdx = existingWithoutNew.findIndex(
-          (pl) => pl.isLikedSongs || pl.id === "LM",
-        );
-        const nextRemotePlaylists =
-          likedIdx >= 0
-            ? [
-                ...existingWithoutNew.slice(0, likedIdx + 1),
-                created,
-                ...existingWithoutNew.slice(likedIdx + 1),
-              ]
-            : [created, ...existingWithoutNew];
-
-        return {
-          remotePlaylists: nextRemotePlaylists,
-          remotePlaylistsStatus: "success",
-          remotePlaylistsError: null,
-          remotePlaylistTrackIds: {
-            ...state.remotePlaylistTrackIds,
-            [created.id]: [track.id],
-          },
-        };
-      });
-      useToastStore
-        .getState()
-        .showToast(`Playlist "${created.title}" creata su YouTube Music`);
-      void get().refreshRemotePlaylists({ silent: true });
-      return true;
-    } catch (err: unknown) {
-      if (isAuthExpiredError(err)) {
-        void clearAuthSession().catch(() => undefined);
-        setYTMusicAuthCookie(null);
-        get().resetAuthToGuest(
-          "Sessione scaduta, effettua nuovamente l'accesso",
-        );
-        useToastStore
-          .getState()
-          .showToast(
-            "Sessione YouTube Music scaduta. Accedi di nuovo.",
-            3600,
-          );
-      } else {
-        useToastStore
-          .getState()
-          .showToast(
-            `Impossibile creare la playlist: ${formatNetworkError(err)}`,
-            3600,
-          );
-      }
-      return false;
-    }
+    const result = await get().createPlaylist({
+      title,
+      privacyStatus: "PRIVATE",
+      syncWithYTMusic: true,
+      initialTrack: track,
+    });
+    return result !== null;
   },
 
   resetAuthToGuest: (notice) => {
     remoteSyncGeneration += 1;
     inFlightRemotePlaylistsRefresh = null;
+    recentlyCreatedRemotePlaylists.clear();
     set({
       authStatus: "guest",
       authUser: null,
@@ -1648,4 +2391,5 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       authNotice: notice ?? null,
     });
   },
-}));
+  };
+});

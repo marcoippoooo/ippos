@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Clock,
+  Cloud,
   Crown,
   Flame,
   Heart,
@@ -12,7 +13,9 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
+  X,
 } from "lucide-react";
 import {
   fetchRemotePlaylistTracks,
@@ -24,15 +27,18 @@ import {
   AsyncStatus,
   LibrarySortBy,
   LibraryTab,
+  PlaylistPrivacyStatus,
   PlaylistSortBy,
+  PlaylistTrackSortBy,
   RemotePlaylist,
   Track,
   TrackPlayStat,
   UserPlaylist,
 } from "../types/music";
-import { formatTime } from "../utils/formatTime";
+import { formatTime, parseDurationToSeconds } from "../utils/formatTime";
 import { AddToPlaylistMenu } from "./AddToPlaylistMenu";
 import { ArtistLinks } from "./ArtistLinks";
+import { TrackDownloadButton } from "./TrackDownloadButton";
 import { EqualizerBars } from "./EqualizerBars";
 import { ExplicitBadge } from "./ExplicitBadge";
 import { PlaylistCollageCover } from "./PlaylistCollageCover";
@@ -64,6 +70,60 @@ const PLAYLIST_SORT_OPTIONS: { id: PlaylistSortBy; label: string }[] = [
   { id: "count", label: "Tracce" },
 ];
 
+const PLAYLIST_TRACK_SORT_OPTIONS: {
+  id: PlaylistTrackSortBy;
+  label: string;
+}[] = [
+  { id: "default", label: "Predefinito" },
+  { id: "title", label: "Titolo (A-Z)" },
+  { id: "artist", label: "Artista (A-Z)" },
+  { id: "duration", label: "Durata" },
+];
+
+function getEffectiveDurationSeconds(track: Track): number {
+  if (track.durationSeconds > 0) return track.durationSeconds;
+  return parseDurationToSeconds(track.duration);
+}
+
+function filterAndSortPlaylistTracks(
+  tracks: Track[],
+  query: string,
+  sortBy: PlaylistTrackSortBy,
+): Track[] {
+  const needle = query.trim().toLowerCase();
+  const filtered = needle
+    ? tracks.filter(
+        (track) =>
+          track.title.toLowerCase().includes(needle) ||
+          track.artist.toLowerCase().includes(needle) ||
+          Boolean(
+            track.artists?.some((a) => a.name.toLowerCase().includes(needle)),
+          ),
+      )
+    : tracks;
+
+  if (sortBy === "default") return filtered;
+
+  return [...filtered].sort((a, b) => {
+    if (sortBy === "title") {
+      return a.title.localeCompare(b.title, "it", { sensitivity: "base" });
+    }
+    if (sortBy === "artist") {
+      const artistCmp = a.artist.localeCompare(b.artist, "it", {
+        sensitivity: "base",
+      });
+      if (artistCmp !== 0) return artistCmp;
+      return a.title.localeCompare(b.title, "it", { sensitivity: "base" });
+    }
+    const durA = getEffectiveDurationSeconds(a);
+    const durB = getEffectiveDurationSeconds(b);
+    if (durA === 0 && durB === 0) return 0;
+    if (durA === 0) return 1;
+    if (durB === 0) return -1;
+    return durA - durB;
+  });
+}
+
 function sortTracks(tracks: Track[], sortBy: LibrarySortBy): Track[] {
   if (sortBy === "recent") return tracks;
   return [...tracks].sort((a, b) => {
@@ -78,6 +138,13 @@ function parseRemoteTrackCount(raw?: string): number {
   if (!raw) return 0;
   const match = raw.match(/\d+/);
   return match ? Number.parseInt(match[0], 10) || 0 : 0;
+}
+
+function formatPrivacyLabel(privacy?: PlaylistPrivacyStatus): string | null {
+  if (privacy === "PRIVATE") return "Privata";
+  if (privacy === "UNLISTED") return "Non in elenco";
+  if (privacy === "PUBLIC") return "Pubblica";
+  return null;
 }
 
 export function LibraryView({
@@ -105,7 +172,9 @@ export function LibraryView({
   const addToQueue = usePlayerStore((s) => s.addToQueue);
   const toggleLike = usePlayerStore((s) => s.toggleLike);
   const clearRecentTracks = usePlayerStore((s) => s.clearRecentTracks);
-  const createPlaylist = usePlayerStore((s) => s.createPlaylist);
+  const openCreatePlaylistModal = usePlayerStore(
+    (s) => s.openCreatePlaylistModal,
+  );
   const deletePlaylist = usePlayerStore((s) => s.deletePlaylist);
   const removeTrackFromPlaylist = usePlayerStore(
     (s) => s.removeTrackFromPlaylist,
@@ -121,13 +190,15 @@ export function LibraryView({
   const [sortBy, setSortBy] = useState<LibrarySortBy>("recent");
   const [playlistSortBy, setPlaylistSortBy] =
     useState<PlaylistSortBy>("recent");
-  const [newPlaylistName, setNewPlaylistName] = useState("");
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(
     null,
   );
   const [selectedRemotePlaylistId, setSelectedRemotePlaylistId] = useState<
     string | null
   >(null);
+  const [playlistTrackFilter, setPlaylistTrackFilter] = useState("");
+  const [playlistTrackSortBy, setPlaylistTrackSortBy] =
+    useState<PlaylistTrackSortBy>("default");
   const [remoteTracks, setRemoteTracks] = useState<Track[]>([]);
   const [remoteTracksStatus, setRemoteTracksStatus] =
     useState<AsyncStatus>("idle");
@@ -226,6 +297,31 @@ export function LibraryView({
     [authStatus, remotePlaylists, selectedRemotePlaylistId],
   );
 
+  const displayedRemoteTracks = useMemo(
+    () =>
+      filterAndSortPlaylistTracks(
+        remoteTracks,
+        playlistTrackFilter,
+        playlistTrackSortBy,
+      ),
+    [remoteTracks, playlistTrackFilter, playlistTrackSortBy],
+  );
+
+  const displayedLocalPlaylistTracks = useMemo(
+    () =>
+      filterAndSortPlaylistTracks(
+        selectedPlaylist?.tracks ?? [],
+        playlistTrackFilter,
+        playlistTrackSortBy,
+      ),
+    [selectedPlaylist?.tracks, playlistTrackFilter, playlistTrackSortBy],
+  );
+
+  useEffect(() => {
+    setPlaylistTrackFilter("");
+    setPlaylistTrackSortBy("default");
+  }, [selectedPlaylistId, selectedRemotePlaylistId]);
+
   useEffect(() => {
     if (!selectedRemotePlaylistId || remoteTracksStatus !== "success") return;
     const cleanId = selectedRemotePlaylistId.trim().replace(/^VL/, "");
@@ -311,13 +407,85 @@ export function LibraryView({
 
   const displayName = authUser?.name || "Account Google";
 
-  const handleCreatePlaylist = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = newPlaylistName.trim();
-    if (!trimmed) return;
-    const id = createPlaylist(trimmed);
-    setNewPlaylistName("");
-    setSelectedPlaylistId(id);
+  const renderPlaylistFilterAndSortBar = (
+    totalCount: number,
+    filteredCount: number,
+  ) => {
+    if (totalCount === 0) return null;
+    const hasFilter = playlistTrackFilter.trim().length > 0;
+    return (
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search
+            className="w-3.5 h-3.5 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+            style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+          />
+          <input
+            type="text"
+            value={playlistTrackFilter}
+            onChange={(e) => setPlaylistTrackFilter(e.target.value)}
+            placeholder="Filtra per titolo o artista..."
+            aria-label="Filtra brani nella playlist"
+            className="w-full h-9 pl-9 pr-16 rounded-full text-[12.5px] placeholder-zinc-400/75 focus:outline-none focus:ring-2 focus:ring-[rgb(var(--md-accent-primary-rgb)/0.5)] at-tonal"
+            style={{
+              backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.85)",
+              border: "1px solid rgb(var(--md-outline-rgb) / 0.24)",
+              color: "rgb(var(--md-on-surface-rgb))",
+            }}
+          />
+          <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1">
+            {hasFilter && (
+              <span
+                className="text-[10.5px] tabular-nums"
+                style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+              >
+                {filteredCount} di {totalCount}
+              </span>
+            )}
+            {hasFilter && (
+              <button
+                type="button"
+                onClick={() => setPlaylistTrackFilter("")}
+                aria-label="Cancella filtro playlist"
+                className="p-1 rounded-full text-zinc-400 hover:text-white hover:bg-white/[0.08] transition-colors"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div
+          className="inline-flex flex-wrap p-1 rounded-full self-start sm:self-auto at-tonal"
+          style={{
+            backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.85)",
+            border: "1px solid rgb(var(--md-outline-rgb) / 0.22)",
+          }}
+        >
+          {PLAYLIST_TRACK_SORT_OPTIONS.map((opt) => {
+            const active = playlistTrackSortBy === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setPlaylistTrackSortBy(opt.id)}
+                className="px-3 py-1 rounded-full text-[11.5px] font-medium transition-all duration-200"
+                style={
+                  active
+                    ? {
+                        backgroundColor: "rgb(var(--md-primary-container-rgb))",
+                        color: "rgb(var(--md-on-primary-container-rgb))",
+                      }
+                    : { color: "rgb(var(--md-on-surface-variant-rgb))" }
+                }
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
   };
 
   const renderSortAndPlayHeader = (
@@ -433,7 +601,7 @@ export function LibraryView({
           border: "1px solid rgb(var(--md-outline-rgb) / 0.2)",
         }}
       >
-        {tracks.map((track) => {
+        {tracks.map((track, idx) => {
           const isCurrent = currentTrack?.id === track.id;
           const isPlayingTrack = isCurrent && playbackStatus === "playing";
           const isLoadingTrack = isCurrent && playbackStatus === "loading";
@@ -442,7 +610,7 @@ export function LibraryView({
 
           return (
             <div
-              key={track.id}
+              key={`${track.id}-${idx}`}
               onClick={() => playTrack(track, tracks)}
               className={`flex items-center gap-3.5 px-4 py-3 cursor-pointer transition-colors group first:rounded-t-3xl last:rounded-b-3xl ${
                 isCurrent ? "" : "hover:bg-white/[0.05]"
@@ -547,6 +715,8 @@ export function LibraryView({
                   track={track}
                   className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
                 />
+
+                <TrackDownloadButton track={track} />
 
                 <button
                   type="button"
@@ -665,6 +835,19 @@ export function LibraryView({
               Aggiorna
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={() => openCreatePlaylistModal()}
+            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-[12.5px] font-semibold shadow-sm transition-transform active:scale-95 at-tonal"
+            style={{
+              backgroundColor: "rgb(var(--md-accent-primary-rgb))",
+              color: "rgb(var(--md-on-accent-rgb))",
+            }}
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Nuova playlist
+          </button>
         </div>
       </div>
 
@@ -838,19 +1021,40 @@ export function LibraryView({
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <h4
-                      className="text-[14px] font-semibold truncate"
-                      style={{ color: "rgb(var(--md-on-surface-rgb))" }}
-                    >
-                      {pl.title}
-                    </h4>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <h4
+                        className="text-[14px] font-semibold truncate"
+                        style={{ color: "rgb(var(--md-on-surface-rgb))" }}
+                      >
+                        {pl.title}
+                      </h4>
+                      {!pl.isLikedSongs && (
+                        <span
+                          title="Sincronizzata con YouTube Music"
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9.5px] font-semibold shrink-0"
+                          style={{
+                            backgroundColor:
+                              "rgb(var(--md-secondary-container-rgb) / 0.85)",
+                            color: "rgb(var(--md-on-secondary-container-rgb))",
+                          }}
+                        >
+                          <Cloud className="w-2.5 h-2.5" />
+                          YT Music
+                        </span>
+                      )}
+                    </div>
                     <p
                       className="text-[12px] mt-0.5 truncate tabular-nums"
                       style={{
                         color: "rgb(var(--md-on-surface-variant-rgb))",
                       }}
                     >
-                      {pl.trackCount || pl.subtitle || "Playlist YouTube Music"}
+                      {[
+                        pl.trackCount || pl.subtitle || "Playlist YouTube Music",
+                        formatPrivacyLabel(pl.privacyStatus),
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
                     </p>
                   </div>
 
@@ -902,35 +1106,6 @@ export function LibraryView({
               </span>
             )}
           </div>
-
-          <form
-            onSubmit={handleCreatePlaylist}
-            className="flex items-center gap-2 w-full sm:w-auto sm:min-w-[300px]"
-          >
-            <input
-              type="text"
-              value={newPlaylistName}
-              onChange={(e) => setNewPlaylistName(e.target.value)}
-              placeholder="Nome nuova playlist locale..."
-              className="flex-1 h-9 px-4 rounded-full text-[13px] placeholder-zinc-400/75 focus:outline-none focus:ring-2 focus:ring-[rgb(var(--md-accent-primary-rgb)/0.5)] at-tonal"
-              style={{
-                backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.85)",
-                border: "1px solid rgb(var(--md-outline-rgb) / 0.24)",
-                color: "rgb(var(--md-on-surface-rgb))",
-              }}
-            />
-            <button
-              type="submit"
-              disabled={!newPlaylistName.trim()}
-              className="h-9 px-4 rounded-full text-[12.5px] font-semibold disabled:opacity-40 transition-transform active:scale-95 shrink-0 at-tonal"
-              style={{
-                backgroundColor: "rgb(var(--md-primary-container-rgb))",
-                color: "rgb(var(--md-on-primary-container-rgb))",
-              }}
-            >
-              Crea
-            </button>
-          </form>
         </div>
 
         {playlists.length === 0 ? (
@@ -946,7 +1121,7 @@ export function LibraryView({
               Nessuna playlist locale salvata
             </p>
             <p className="text-[12.5px] text-zinc-500 max-w-md mx-auto">
-              Crea una playlist qui sopra oppure usa Aggiungi a playlist su qualsiasi brano.
+              Usa il pulsante &ldquo;Nuova playlist&rdquo; in alto oppure Aggiungi a playlist su qualsiasi brano.
             </p>
           </div>
         ) : (
@@ -1652,14 +1827,27 @@ export function LibraryView({
                     {selectedRemotePlaylist.title}
                   </h2>
                   <span
-                    className="px-2.5 py-0.5 rounded-full text-[10.5px] font-medium shrink-0"
+                    className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10.5px] font-medium shrink-0"
                     style={{
                       backgroundColor: "rgb(var(--md-secondary-container-rgb))",
                       color: "rgb(var(--md-on-secondary-container-rgb))",
                     }}
                   >
+                    <Cloud className="w-3 h-3" />
                     YouTube Music
                   </span>
+                  {formatPrivacyLabel(selectedRemotePlaylist.privacyStatus) && (
+                    <span
+                      className="px-2.5 py-0.5 rounded-full text-[10.5px] font-medium shrink-0"
+                      style={{
+                        backgroundColor:
+                          "rgb(var(--md-surface-container-high-rgb))",
+                        color: "rgb(var(--md-on-surface-variant-rgb))",
+                      }}
+                    >
+                      {formatPrivacyLabel(selectedRemotePlaylist.privacyStatus)}
+                    </span>
+                  )}
                 </div>
                 <p
                   className="text-[12px] tabular-nums"
@@ -1671,14 +1859,24 @@ export function LibraryView({
                         remoteTracks.length === 1 ? "brano" : "brani"
                       }`}
                 </p>
+                {selectedRemotePlaylist.description && (
+                  <p
+                    className="text-[12px] truncate mt-0.5"
+                    style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                  >
+                    {selectedRemotePlaylist.description}
+                  </p>
+                )}
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              {remoteTracks.length > 0 && (
+              {displayedRemoteTracks.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => playTrack(remoteTracks[0], remoteTracks)}
+                  onClick={() =>
+                    playTrack(displayedRemoteTracks[0], displayedRemoteTracks)
+                  }
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-[12.5px] font-semibold transition-transform active:scale-95"
                   style={{
                     backgroundColor: "rgb(var(--md-accent-primary-rgb))",
@@ -1710,6 +1908,12 @@ export function LibraryView({
               </button>
             </div>
           </div>
+
+          {remoteTracksStatus === "success" &&
+            renderPlaylistFilterAndSortBar(
+              remoteTracks.length,
+              displayedRemoteTracks.length,
+            )}
 
           {remoteTracksStatus === "loading" ? (
             <div
@@ -1753,9 +1957,32 @@ export function LibraryView({
                 Riprova
               </button>
             </div>
+          ) : remoteTracks.length > 0 && displayedRemoteTracks.length === 0 ? (
+            <div
+              className="rounded-3xl p-8 text-center space-y-3 at-tonal"
+              style={{
+                backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.72)",
+                border: "1px solid rgb(var(--md-outline-rgb) / 0.2)",
+              }}
+            >
+              <p className="text-[13.5px] text-zinc-200">
+                Nessun brano corrisponde a &ldquo;{playlistTrackFilter.trim()}&rdquo;.
+              </p>
+              <button
+                type="button"
+                onClick={() => setPlaylistTrackFilter("")}
+                className="px-4 py-1.5 rounded-full text-[12px] font-semibold transition-transform active:scale-95"
+                style={{
+                  backgroundColor: "rgb(var(--md-primary-container-rgb))",
+                  color: "rgb(var(--md-on-primary-container-rgb))",
+                }}
+              >
+                Cancella filtro
+              </button>
+            </div>
           ) : (
             renderTrackList(
-              remoteTracks,
+              displayedRemoteTracks,
               "Nessun brano trovato in questa playlist.",
             )
           )}
@@ -1794,15 +2021,26 @@ export function LibraryView({
                   {selectedPlaylist.tracks.length}{" "}
                   {selectedPlaylist.tracks.length === 1 ? "brano" : "brani"}
                 </p>
+                {selectedPlaylist.description && (
+                  <p
+                    className="text-[12px] truncate mt-0.5"
+                    style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                  >
+                    {selectedPlaylist.description}
+                  </p>
+                )}
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              {selectedPlaylist.tracks.length > 0 && (
+              {displayedLocalPlaylistTracks.length > 0 && (
                 <button
                   type="button"
                   onClick={() =>
-                    playTrack(selectedPlaylist.tracks[0], selectedPlaylist.tracks)
+                    playTrack(
+                      displayedLocalPlaylistTracks[0],
+                      displayedLocalPlaylistTracks,
+                    )
                   }
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-[12.5px] font-semibold transition-transform active:scale-95"
                   style={{
@@ -1828,10 +2066,41 @@ export function LibraryView({
             </div>
           </div>
 
-          {renderTrackList(
-            selectedPlaylist.tracks,
-            "Questa playlist è vuota. Aggiungi brani dalla ricerca, dalla Home o dal player.",
-            (trackId) => removeTrackFromPlaylist(selectedPlaylist.id, trackId),
+          {renderPlaylistFilterAndSortBar(
+            selectedPlaylist.tracks.length,
+            displayedLocalPlaylistTracks.length,
+          )}
+
+          {selectedPlaylist.tracks.length > 0 &&
+          displayedLocalPlaylistTracks.length === 0 ? (
+            <div
+              className="rounded-3xl p-8 text-center space-y-3 at-tonal"
+              style={{
+                backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.72)",
+                border: "1px solid rgb(var(--md-outline-rgb) / 0.2)",
+              }}
+            >
+              <p className="text-[13.5px] text-zinc-200">
+                Nessun brano corrisponde a &ldquo;{playlistTrackFilter.trim()}&rdquo;.
+              </p>
+              <button
+                type="button"
+                onClick={() => setPlaylistTrackFilter("")}
+                className="px-4 py-1.5 rounded-full text-[12px] font-semibold transition-transform active:scale-95"
+                style={{
+                  backgroundColor: "rgb(var(--md-primary-container-rgb))",
+                  color: "rgb(var(--md-on-primary-container-rgb))",
+                }}
+              >
+                Cancella filtro
+              </button>
+            </div>
+          ) : (
+            renderTrackList(
+              displayedLocalPlaylistTracks,
+              "Questa playlist è vuota. Aggiungi brani dalla ricerca, dalla Home o dal player.",
+              (trackId) => removeTrackFromPlaylist(selectedPlaylist.id, trackId),
+            )
           )}
         </div>
       )}

@@ -63,10 +63,11 @@ export function Sidebar({ onLogin, onLogout }: SidebarProps) {
 
   return (
     <aside
-      className="w-[244px] shrink-0 h-full flex flex-col backdrop-blur-2xl select-none at-tonal"
+      className="w-[244px] shrink-0 h-full flex flex-col backdrop-blur-2xl border-r border-white/[0.08] shadow-[4px_0_32px_rgba(0,0,0,0.34)] select-none at-tonal"
       style={{
-        backgroundColor: "rgb(var(--md-surface-container-low-rgb) / 0.80)",
-        borderRight: "1px solid rgb(var(--md-outline-rgb) / 0.20)",
+        backgroundColor: "rgb(var(--md-surface-container-low-rgb) / 0.58)",
+        backgroundImage:
+          "linear-gradient(180deg, rgba(255,255,255,0.045) 0%, rgba(255,255,255,0.01) 32%, rgba(0,0,0,0.12) 100%)",
       }}
     >
       {/* Fascia dedicata ai semafori della Titlebar Overlay macOS */}
@@ -88,10 +89,10 @@ export function Sidebar({ onLogin, onLogout }: SidebarProps) {
           <Disc3 className="w-4 h-4" />
         </div>
         <span
-          className="text-[14.5px] font-semibold tracking-tight pointer-events-none"
+          className="text-[15px] font-bold tracking-[0.14em] pointer-events-none"
           style={{ color: "rgb(var(--md-on-surface-rgb))" }}
         >
-          Ippos
+          IPPOS
         </span>
       </div>
 
@@ -114,7 +115,7 @@ export function Sidebar({ onLogin, onLogout }: SidebarProps) {
                   }
                   setActiveView(item.id);
                 }}
-                className={`flex items-center gap-3 w-full px-3.5 py-2.5 rounded-full text-[13px] font-medium transition-all duration-300 ${
+                className={`flex items-center gap-3 w-full px-3.5 py-2.5 rounded-full text-[13px] font-medium transition-all duration-300 active:scale-[0.98] ${
                   isActive
                     ? "shadow-xs"
                     : "hover:bg-white/[0.06]"
@@ -138,10 +139,7 @@ export function Sidebar({ onLogin, onLogout }: SidebarProps) {
         </nav>
 
         {/* Sezione Libreria */}
-        <div
-          className="pt-4 space-y-1.5"
-          style={{ borderTop: "1px solid rgb(var(--md-outline-rgb) / 0.18)" }}
-        >
+        <div className="pt-4 space-y-1.5 border-t border-white/[0.08]">
           <div
             className="px-3.5 pb-1 text-[11px] font-medium"
             style={{ color: "rgb(var(--md-on-surface-variant-rgb) / 0.85)" }}
@@ -168,7 +166,7 @@ export function Sidebar({ onLogin, onLogout }: SidebarProps) {
                     setLibraryTab(item.tab);
                     setActiveView("library");
                   }}
-                  className={`flex items-center justify-between w-full px-3.5 py-2 rounded-full text-[13px] font-medium transition-all duration-300 ${
+                  className={`flex items-center justify-between w-full px-3.5 py-2 rounded-full text-[13px] font-medium transition-all duration-300 active:scale-[0.98] ${
                     isSelected ? "shadow-xs" : "hover:bg-white/[0.06]"
                   }`}
                   style={
@@ -214,17 +212,14 @@ export function Sidebar({ onLogin, onLogout }: SidebarProps) {
       </div>
 
       {/* Impostazioni & Stato Account YouTube Music */}
-      <div
-        className="p-3 space-y-2 shrink-0"
-        style={{ borderTop: "1px solid rgb(var(--md-outline-rgb) / 0.18)" }}
-      >
+      <div className="p-3 space-y-2 shrink-0 border-t border-white/[0.08]">
         <button
           type="button"
           onClick={() => {
             clearSearch();
             setActiveView("settings");
           }}
-          className={`flex items-center gap-3 w-full px-3.5 py-2 rounded-full text-[13px] font-medium transition-all duration-300 ${
+          className={`flex items-center gap-3 w-full px-3.5 py-2 rounded-full text-[13px] font-medium transition-all duration-300 active:scale-[0.98] ${
             activeView === "settings" ? "shadow-xs" : "hover:bg-white/[0.06]"
           }`}
           style={
@@ -243,10 +238,9 @@ export function Sidebar({ onLogin, onLogout }: SidebarProps) {
         </button>
         {authStatus === "authenticated" ? (
           <div
-            className="flex items-center gap-2.5 p-2 rounded-2xl at-tonal"
+            className="flex items-center gap-2.5 p-2 rounded-2xl border border-white/[0.08] shadow-sm shadow-black/25 at-tonal"
             style={{
-              backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.85)",
-              border: "1px solid rgb(var(--md-outline-rgb) / 0.22)",
+              backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.72)",
             }}
           >
             <ScallopedArtwork
@@ -319,10 +313,9 @@ export function Sidebar({ onLogin, onLogout }: SidebarProps) {
           <button
             type="button"
             onClick={onLogin}
-            className="flex items-center gap-2.5 w-full px-3.5 py-2.5 rounded-full text-left transition-transform active:scale-[0.98] at-tonal"
+            className="flex items-center gap-2.5 w-full px-3.5 py-2.5 rounded-full text-left border border-white/[0.08] shadow-sm shadow-black/25 transition-transform active:scale-[0.98] at-tonal"
             style={{
-              backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.85)",
-              border: "1px solid rgb(var(--md-outline-rgb) / 0.25)",
+              backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.72)",
             }}
           >
             <LogIn

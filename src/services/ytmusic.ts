@@ -19,6 +19,7 @@ import {
   FeedSection,
   HomeMoodFilter,
   HomePlaylist,
+  PlaylistPrivacyStatus,
   RemotePlaylist,
   SearchFilter,
   SelectedArtist,
@@ -153,6 +154,15 @@ export function clearRemotePlaylistCache(playlistId?: string): void {
   } else {
     remotePlaylistTracksCache.clear();
   }
+}
+
+export function seedRemotePlaylistCache(
+  playlistId: string,
+  tracks: Track[],
+): void {
+  const cleanId = playlistId.trim().replace(/^VL/, "");
+  if (!cleanId) return;
+  remotePlaylistTracksCache.set(cleanId, deduplicateTracks(tracks));
 }
 
 export function setYTMusicAuthCookie(cookie: string | null): void {
@@ -1139,6 +1149,7 @@ function collectRemotePlaylistFromNode(
       cover: rawCover.startsWith("data:") ? "" : rawCover,
       trackCount: node.item_count ?? undefined,
       isLikedSongs: id === "LM",
+      isRemote: true,
     });
     return;
   }
@@ -1163,6 +1174,7 @@ function collectRemotePlaylistFromNode(
     cover: rawCover.startsWith("data:") ? "" : rawCover,
     trackCount: node.song_count ?? node.item_count ?? undefined,
     isLikedSongs: id === "LM",
+    isRemote: true,
   });
 }
 
@@ -1347,13 +1359,14 @@ export async function fetchRemotePlaylists(): Promise<RemotePlaylist[]> {
   const liked = collected.get("LM");
   collected.delete("LM");
   const likedEntry: RemotePlaylist = liked
-    ? { ...liked, isLikedSongs: true }
+    ? { ...liked, isLikedSongs: true, isRemote: true }
     : {
         id: "LM",
         title: "Brani che ti piacciono",
         subtitle: "Playlist YouTube Music",
         cover: "",
         isLikedSongs: true,
+        isRemote: true,
       };
 
   return [likedEntry, ...collected.values()];
@@ -1429,6 +1442,7 @@ function assertEditResponseOk(
 export async function addTrackToRemotePlaylist(
   playlistId: string,
   videoId: string,
+  options?: { allowDuplicate?: boolean },
 ): Promise<void> {
   const cleanId = playlistId.trim().replace(/^VL/, "");
   const cleanVideoId = videoId.trim();
@@ -1467,7 +1481,9 @@ export async function addTrackToRemotePlaylist(
         {
           action: "ACTION_ADD_VIDEO",
           addedVideoId: cleanVideoId,
-          dedupeOption: "DEDUPE_OPTION_CHECK",
+          dedupeOption: options?.allowDuplicate
+            ? "DEDUPE_OPTION_SKIP"
+            : "DEDUPE_OPTION_CHECK",
         },
       ],
       client: "YTMUSIC",
@@ -1543,40 +1559,74 @@ export async function removeTrackFromRemotePlaylist(
 
 export async function createRemotePlaylist(
   title: string,
-  initialVideoIds: string[] = [],
-): Promise<RemotePlaylist> {
-  const trimmed = title.trim();
-  if (!trimmed) {
+  description?: string,
+  privacyStatus: PlaylistPrivacyStatus = "PRIVATE",
+  videoIds?: string[],
+): Promise<string> {
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle) {
     throw new Error("Inserisci un nome valido per la playlist.");
   }
 
-  const client = await assertLoggedInClient();
-  const videoIds = initialVideoIds.map((id) => id.trim()).filter(Boolean);
+  const trimmedDescription = description?.trim() || undefined;
+  const normalizedPrivacy: PlaylistPrivacyStatus =
+    privacyStatus === "PUBLIC" ||
+    privacyStatus === "UNLISTED" ||
+    privacyStatus === "PRIVATE"
+      ? privacyStatus
+      : "PRIVATE";
+  const cleanedVideoIds = (videoIds ?? [])
+    .map((id) => id.trim())
+    .filter(Boolean);
 
+  const client = await assertLoggedInClient();
   let createdId: string | undefined;
 
   try {
-    const res = await client.actions.execute("/playlist/create", {
-      title: trimmed,
-      privacyStatus: "PRIVATE",
-      ...(videoIds.length > 0 ? { videoIds } : {}),
+    const payload: Record<string, unknown> = {
+      title: trimmedTitle,
+      privacyStatus: normalizedPrivacy,
       client: "YTMUSIC",
-    });
+    };
+    if (trimmedDescription) {
+      payload.description = trimmedDescription;
+    }
+    if (cleanedVideoIds.length > 0) {
+      payload.videoIds = cleanedVideoIds;
+    }
+
+    const res = await client.actions.execute("/playlist/create", payload);
+    assertEditResponseOk(
+      res,
+      "Impossibile creare la playlist su YouTube Music.",
+    );
+
     const dataRecord =
       res.data && typeof res.data === "object"
-        ? (res.data as { playlistId?: string })
+        ? (res.data as { playlistId?: unknown; playlist_id?: unknown })
         : undefined;
-    if (typeof dataRecord?.playlistId === "string" && dataRecord.playlistId) {
-      createdId = dataRecord.playlistId;
+    const rawId =
+      typeof dataRecord?.playlistId === "string"
+        ? dataRecord.playlistId
+        : typeof dataRecord?.playlist_id === "string"
+          ? dataRecord.playlist_id
+          : undefined;
+    if (rawId?.trim()) {
+      createdId = rawId.trim();
     }
   } catch (err: unknown) {
     if (isAuthExpiredError(err)) throw err;
   }
 
   if (!createdId) {
-    const fallback = await client.playlist.create(trimmed, videoIds);
-    if (fallback.playlist_id) {
-      createdId = fallback.playlist_id;
+    const fallback = await client.playlist.create(
+      trimmedTitle,
+      cleanedVideoIds,
+      normalizedPrivacy,
+      trimmedDescription,
+    );
+    if (fallback.playlist_id?.trim()) {
+      createdId = fallback.playlist_id.trim();
     }
   }
 
@@ -1586,15 +1636,9 @@ export async function createRemotePlaylist(
     );
   }
 
-  const cleanId = createdId.trim().replace(/^VL/, "");
-  return {
-    id: cleanId,
-    title: trimmed,
-    subtitle: "Playlist YouTube Music",
-    cover: "",
-    trackCount: videoIds.length > 0 ? `${videoIds.length}` : "0",
-    isLikedSongs: false,
-  };
+  const cleanId = createdId.replace(/^VL/, "");
+  clearRemotePlaylistCache(cleanId);
+  return cleanId;
 }
 
 export function formatNetworkError(err: unknown): string {
@@ -1907,6 +1951,143 @@ function normalizePlaylistPanelVideo(
     itemType: "song",
     isExplicit: hasExplicitBadge(item.badges) ? true : undefined,
   };
+}
+
+function extractTracksFromPlaylistPanel(
+  panel?: YTNodes.PlaylistPanel | null,
+): Track[] {
+  if (!panel?.contents) return [];
+  const collected: Track[] = [];
+  for (const entry of panel.contents) {
+    if (entry.is(YTNodes.PlaylistPanelVideo)) {
+      const parsed = normalizePlaylistPanelVideo(entry);
+      if (parsed) collected.push(parsed);
+    } else if (
+      entry.is(YTNodes.PlaylistPanelVideoWrapper) &&
+      entry.primary?.is(YTNodes.PlaylistPanelVideo)
+    ) {
+      const parsed = normalizePlaylistPanelVideo(entry.primary);
+      if (parsed) collected.push(parsed);
+    }
+  }
+  return collected;
+}
+
+export async function getRadioTracks(
+  videoId: string,
+  playlistId?: string,
+): Promise<Track[]> {
+  const cleanVideoId = videoId.trim();
+  if (!cleanVideoId) return [];
+
+  const cleanPlaylistId = playlistId?.trim().replace(/^VL/, "");
+  const targetPlaylistId = cleanPlaylistId || `RDAMVM${cleanVideoId}`;
+  const client = await getYTMusicClient();
+  const collected: Track[] = [];
+
+  try {
+    const nextRes = await client.actions.execute("/next", {
+      videoId: cleanVideoId,
+      playlistId: targetPlaylistId,
+      enablePersistentPlaylistPanel: true,
+      tunerSettingValue: "AUTOMIX_SETTING_NORMAL",
+      client: "YTMUSIC",
+      parse: true,
+    });
+
+    const panels = nextRes.contents_memo?.getType(YTNodes.PlaylistPanel);
+    if (panels) {
+      for (const panel of panels) {
+        collected.push(...extractTracksFromPlaylistPanel(panel));
+      }
+    }
+
+    if (collected.length <= 1) {
+      const automixPreview = nextRes.contents_memo?.getType(
+        YTNodes.AutomixPreviewVideo,
+      )?.[0];
+      const automixEndpoint = automixPreview?.playlist_video?.endpoint;
+      if (automixEndpoint) {
+        const automixPage = await automixEndpoint.call(client.actions, {
+          videoId: cleanVideoId,
+          client: "YTMUSIC",
+          parse: true,
+        });
+        const automixPanels =
+          automixPage.contents_memo?.getType(YTNodes.PlaylistPanel);
+        if (automixPanels) {
+          for (const panel of automixPanels) {
+            collected.push(...extractTracksFromPlaylistPanel(panel));
+          }
+        }
+      }
+    }
+
+    if (collected.length === 0) {
+      const panelVideos = nextRes.contents_memo?.getType(
+        YTNodes.PlaylistPanelVideo,
+      );
+      if (panelVideos) {
+        for (const item of panelVideos) {
+          const parsed = normalizePlaylistPanelVideo(item);
+          if (parsed) collected.push(parsed);
+        }
+      }
+    }
+  } catch {
+    // Passa ai fallback getUpNext / getRelated
+  }
+
+  let filtered = deduplicateTracks(collected).filter(
+    (t) => t.id !== cleanVideoId,
+  );
+
+  if (filtered.length === 0) {
+    try {
+      const upNext = await client.music.getUpNext(cleanVideoId, true);
+      collected.push(...extractTracksFromPlaylistPanel(upNext));
+      filtered = deduplicateTracks(collected).filter(
+        (t) => t.id !== cleanVideoId,
+      );
+    } catch {
+      // Passa al fallback getRelated
+    }
+  }
+
+  if (filtered.length === 0) {
+    try {
+      const related = await client.music.getRelated(cleanVideoId);
+      if (related.is(YTNodes.SectionList)) {
+        for (const section of related.contents) {
+          if (section.is(YTNodes.MusicCarouselShelf)) {
+            for (const item of section.contents) {
+              if (item.is(YTNodes.MusicResponsiveListItem)) {
+                const t = normalizeResponsiveItem(item);
+                if (t) collected.push(t);
+              } else if (item.is(YTNodes.MusicTwoRowItem)) {
+                const t = normalizeTwoRowItem(item);
+                if (t) collected.push(t);
+              }
+            }
+          } else if (section.is(YTNodes.MusicShelf)) {
+            for (const item of section.contents) {
+              if (item.is(YTNodes.MusicResponsiveListItem)) {
+                const t = normalizeResponsiveItem(item);
+                if (t) collected.push(t);
+              }
+            }
+          }
+        }
+        filtered = deduplicateTracks(collected).filter(
+          (t) => t.id !== cleanVideoId,
+        );
+      }
+    } catch {
+      // Nessun correlato disponibile
+    }
+  }
+
+  return filtered.slice(0, 20);
 }
 
 export async function fetchRelatedTracks(track: Track): Promise<Track[]> {

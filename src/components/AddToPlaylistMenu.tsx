@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  AlertTriangle,
   Check,
   Heart,
   ListMusic,
@@ -9,9 +10,12 @@ import {
   Plus,
   RefreshCw,
 } from "lucide-react";
-import { isEditableRemotePlaylist } from "../services/ytmusic";
+import {
+  fetchRemotePlaylistTracks,
+  isEditableRemotePlaylist,
+} from "../services/ytmusic";
 import { usePlayerStore } from "../store/playerStore";
-import { Track } from "../types/music";
+import { RemotePlaylist, Track, UserPlaylist } from "../types/music";
 
 interface AddToPlaylistMenuProps {
   track: Track;
@@ -51,31 +55,28 @@ export function AddToPlaylistMenu({
   const likedTracks = usePlayerStore((s) => s.likedTracks);
   const authStatus = usePlayerStore((s) => s.authStatus);
 
-  const createPlaylist = usePlayerStore((s) => s.createPlaylist);
-  const addTrackToPlaylist = usePlayerStore((s) => s.addTrackToPlaylist);
-  const removeTrackFromPlaylist = usePlayerStore(
-    (s) => s.removeTrackFromPlaylist,
+  const openCreatePlaylistModal = usePlayerStore(
+    (s) => s.openCreatePlaylistModal,
   );
+  const addTrackToPlaylist = usePlayerStore((s) => s.addTrackToPlaylist);
   const refreshRemotePlaylists = usePlayerStore(
     (s) => s.refreshRemotePlaylists,
+  );
+  const setRemotePlaylistTrackIds = usePlayerStore(
+    (s) => s.setRemotePlaylistTrackIds,
   );
   const addTrackToRemotePlaylistOptimistic = usePlayerStore(
     (s) => s.addTrackToRemotePlaylistOptimistic,
   );
-  const removeTrackFromRemotePlaylistOptimistic = usePlayerStore(
-    (s) => s.removeTrackFromRemotePlaylistOptimistic,
-  );
-  const createRemotePlaylistAndAddTrack = usePlayerStore(
-    (s) => s.createRemotePlaylistAndAddTrack,
-  );
 
   const [isOpen, setIsOpen] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [createTarget, setCreateTarget] = useState<"remote" | "local">(
-    authStatus === "authenticated" ? "remote" : "local",
-  );
-  const [creatingRemote, setCreatingRemote] = useState(false);
   const [coords, setCoords] = useState<PopoverCoords | null>(null);
+  const [duplicatePrompt, setDuplicatePrompt] = useState<
+    | { kind: "remote"; playlist: RemotePlaylist }
+    | { kind: "local"; playlist: UserPlaylist }
+    | null
+  >(null);
+  const [checkingRemoteId, setCheckingRemoteId] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -92,14 +93,6 @@ export function AddToPlaylistMenu({
     () => new Set(likedTracks.map((t) => t.id)),
     [likedTracks],
   );
-
-  useEffect(() => {
-    if (!isAuthenticated && createTarget === "remote") {
-      setCreateTarget("local");
-    } else if (isAuthenticated && !isOpen) {
-      setCreateTarget("remote");
-    }
-  }, [isAuthenticated, isOpen, createTarget]);
 
   const updatePosition = useCallback(() => {
     const trigger = triggerRef.current;
@@ -135,7 +128,11 @@ export function AddToPlaylistMenu({
   }, [align, openUpward]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      setDuplicatePrompt(null);
+      setCheckingRemoteId(null);
+      return;
+    }
 
     updatePosition();
 
@@ -194,28 +191,85 @@ export function AddToPlaylistMenu({
     };
   }, [isOpen, updatePosition]);
 
-  const handleCreateAndAdd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const trimmed = newName.trim();
-    if (!trimmed || creatingRemote) return;
+  useEffect(() => {
+    setDuplicatePrompt(null);
+    setCheckingRemoteId(null);
+  }, [track.id]);
 
-    if (isAuthenticated && createTarget === "remote") {
-      setCreatingRemote(true);
-      try {
-        const ok = await createRemotePlaylistAndAddTrack(trimmed, track);
-        if (ok) {
-          setNewName("");
-        }
-      } finally {
-        setCreatingRemote(false);
+  const handleSelectRemotePlaylist = async (pl: RemotePlaylist) => {
+    const cleanId = pl.id.trim().replace(/^VL/, "");
+    if (!cleanId || checkingRemoteId === cleanId) return;
+
+    const isLikedPlaylist = Boolean(pl.isLikedSongs || cleanId === "LM");
+    if (isLikedPlaylist) {
+      const alreadyLiked =
+        likedTrackIds.has(track.id) ||
+        (remotePlaylistTrackIds["LM"]?.includes(track.id) ?? false);
+      if (alreadyLiked) {
+        setDuplicatePrompt({ kind: "remote", playlist: pl });
+        return;
       }
+      setDuplicatePrompt(null);
+      void addTrackToRemotePlaylistOptimistic(pl, track);
       return;
     }
 
-    const id = createPlaylist(trimmed);
-    addTrackToPlaylist(id, track);
-    setNewName("");
+    const hasCachedIds = Object.prototype.hasOwnProperty.call(
+      remotePlaylistTrackIds,
+      cleanId,
+    );
+    if (hasCachedIds) {
+      const alreadyPresent =
+        remotePlaylistTrackIds[cleanId]?.includes(track.id) ?? false;
+      if (alreadyPresent) {
+        setDuplicatePrompt({ kind: "remote", playlist: pl });
+        return;
+      }
+      setDuplicatePrompt(null);
+      void addTrackToRemotePlaylistOptimistic(pl, track);
+      return;
+    }
+
+    setCheckingRemoteId(cleanId);
+    setDuplicatePrompt(null);
+    try {
+      const tracks = await fetchRemotePlaylistTracks(pl.id);
+      setRemotePlaylistTrackIds(
+        cleanId,
+        tracks.map((t) => t.id),
+      );
+      if (tracks.some((t) => t.id === track.id)) {
+        setDuplicatePrompt({ kind: "remote", playlist: pl });
+        return;
+      }
+      void addTrackToRemotePlaylistOptimistic(pl, track);
+    } catch {
+      void addTrackToRemotePlaylistOptimistic(pl, track);
+    } finally {
+      setCheckingRemoteId((prev) => (prev === cleanId ? null : prev));
+    }
+  };
+
+  const handleSelectLocalPlaylist = (pl: UserPlaylist) => {
+    if (pl.tracks.some((t) => t.id === track.id)) {
+      setDuplicatePrompt({ kind: "local", playlist: pl });
+      return;
+    }
+    setDuplicatePrompt(null);
+    addTrackToPlaylist(pl.id, track);
+  };
+
+  const handleConfirmDuplicateAdd = () => {
+    if (!duplicatePrompt) return;
+    const target = duplicatePrompt;
+    setDuplicatePrompt(null);
+    if (target.kind === "local") {
+      addTrackToPlaylist(target.playlist.id, track, { allowDuplicate: true });
+    } else {
+      void addTrackToRemotePlaylistOptimistic(target.playlist, track, {
+        allowDuplicate: true,
+      });
+    }
   };
 
   const popover =
@@ -259,6 +313,90 @@ export function AddToPlaylistMenu({
                 </button>
               )}
             </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
+                openCreatePlaylistModal(track);
+              }}
+              className="flex items-center justify-between gap-2 w-full px-2.5 py-2 rounded-xl text-left text-[12px] font-semibold transition-all hover:brightness-110 active:scale-[0.99] shrink-0 at-tonal"
+              style={{
+                backgroundColor: "rgb(var(--md-primary-container-rgb) / 0.88)",
+                color: "rgb(var(--md-on-primary-container-rgb))",
+                border: "1px solid rgb(var(--md-outline-rgb) / 0.25)",
+              }}
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <span
+                  className="w-5 h-5 rounded-full flex items-center justify-center shrink-0"
+                  style={{
+                    backgroundColor: "rgb(var(--md-accent-primary-rgb))",
+                    color: "rgb(var(--md-on-accent-rgb))",
+                  }}
+                >
+                  <Plus className="w-3 h-3" />
+                </span>
+                <span className="truncate">Nuova playlist</span>
+              </span>
+              <span className="text-[10.5px] opacity-80 shrink-0">
+                + brano
+              </span>
+            </button>
+
+            {duplicatePrompt && (
+              <div
+                className="rounded-xl p-2.5 space-y-2 shrink-0 at-tonal"
+                style={{
+                  backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.95)",
+                  border: "1px solid rgb(var(--md-accent-primary-rgb) / 0.45)",
+                }}
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle
+                    className="w-3.5 h-3.5 mt-0.5 shrink-0"
+                    style={{ color: "rgb(var(--md-accent-primary-rgb))" }}
+                  />
+                  <div className="min-w-0">
+                    <p
+                      className="text-[11px] font-medium leading-snug"
+                      style={{ color: "rgb(var(--md-on-surface-rgb))" }}
+                    >
+                      Questo brano è già nella playlist. Vuoi aggiungerlo comunque?
+                    </p>
+                    <p
+                      className="text-[10px] truncate mt-0.5"
+                      style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                    >
+                      {duplicatePrompt.kind === "remote"
+                        ? duplicatePrompt.playlist.title
+                        : duplicatePrompt.playlist.name}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setDuplicatePrompt(null)}
+                    className="px-2.5 py-1 rounded-full text-[10.5px] font-medium hover:bg-white/[0.08] transition"
+                    style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+                  >
+                    Annulla
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmDuplicateAdd}
+                    className="px-2.5 py-1 rounded-full text-[10.5px] font-semibold transition-transform active:scale-95"
+                    style={{
+                      backgroundColor: "rgb(var(--md-accent-primary-rgb))",
+                      color: "rgb(var(--md-on-accent-rgb))",
+                    }}
+                  >
+                    Aggiungi comunque
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-0.5">
               {isAuthenticated && (
@@ -333,7 +471,8 @@ export function AddToPlaylistMenu({
                               track.id,
                             ) ?? false);
                         const isPending = Boolean(
-                          remotePlaylistMutatingKeys[`${cleanId}:${track.id}`],
+                          remotePlaylistMutatingKeys[`${cleanId}:${track.id}`] ||
+                            checkingRemoteId === cleanId,
                         );
 
                         return (
@@ -341,19 +480,7 @@ export function AddToPlaylistMenu({
                             key={pl.id}
                             type="button"
                             disabled={isPending}
-                            onClick={() => {
-                              if (contains) {
-                                void removeTrackFromRemotePlaylistOptimistic(
-                                  pl,
-                                  track,
-                                );
-                              } else {
-                                void addTrackToRemotePlaylistOptimistic(
-                                  pl,
-                                  track,
-                                );
-                              }
-                            }}
+                            onClick={() => void handleSelectRemotePlaylist(pl)}
                             className="flex items-center justify-between gap-2 w-full px-2 py-1.5 rounded-xl text-left text-[12px] hover:bg-white/[0.08] disabled:opacity-65 transition-colors"
                             style={{ color: "rgb(var(--md-on-surface-rgb))" }}
                           >
@@ -445,7 +572,7 @@ export function AddToPlaylistMenu({
                 {playlists.length === 0 ? (
                   !isAuthenticated && (
                     <p className="px-2 py-2 text-[11.5px] text-zinc-400">
-                      Nessuna playlist creata. Creane una qui sotto.
+                      Nessuna playlist creata. Usa Nuova playlist qui sopra.
                     </p>
                   )
                 ) : (
@@ -456,13 +583,7 @@ export function AddToPlaylistMenu({
                         <button
                           key={pl.id}
                           type="button"
-                          onClick={() => {
-                            if (contains) {
-                              removeTrackFromPlaylist(pl.id, track.id);
-                            } else {
-                              addTrackToPlaylist(pl.id, track);
-                            }
-                          }}
+                          onClick={() => handleSelectLocalPlaylist(pl)}
                           className="flex items-center justify-between gap-2 w-full px-2 py-1.5 rounded-xl text-left text-[12px] hover:bg-white/[0.08] transition-colors"
                           style={{ color: "rgb(var(--md-on-surface-rgb))" }}
                         >
@@ -494,87 +615,6 @@ export function AddToPlaylistMenu({
                   </div>
                 )}
               </div>
-            </div>
-
-            <div
-              className="pt-2 space-y-1.5 shrink-0"
-              style={{ borderTop: "1px solid rgb(var(--md-outline-rgb) / 0.2)" }}
-            >
-              {isAuthenticated && (
-                <div className="flex items-center gap-1 px-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setCreateTarget("remote")}
-                    className="flex-1 py-1 rounded-full text-[10.5px] font-semibold transition-colors"
-                    style={
-                      createTarget === "remote"
-                        ? {
-                            backgroundColor:
-                              "rgb(var(--md-primary-container-rgb))",
-                            color: "rgb(var(--md-on-primary-container-rgb))",
-                          }
-                        : { color: "rgb(var(--md-on-surface-variant-rgb))" }
-                    }
-                  >
-                    YouTube Music
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCreateTarget("local")}
-                    className="flex-1 py-1 rounded-full text-[10.5px] font-semibold transition-colors"
-                    style={
-                      createTarget === "local"
-                        ? {
-                            backgroundColor:
-                              "rgb(var(--md-primary-container-rgb))",
-                            color: "rgb(var(--md-on-primary-container-rgb))",
-                          }
-                        : { color: "rgb(var(--md-on-surface-variant-rgb))" }
-                    }
-                  >
-                    Locale
-                  </button>
-                </div>
-              )}
-
-              <form
-                onSubmit={(e) => void handleCreateAndAdd(e)}
-                className="flex items-center gap-1.5"
-              >
-                <input
-                  type="text"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  disabled={creatingRemote}
-                  placeholder={
-                    isAuthenticated && createTarget === "remote"
-                      ? "Nuova playlist YouTube Music..."
-                      : "Nuova playlist locale..."
-                  }
-                  className="flex-1 min-w-0 h-7 px-3 rounded-full text-[11.5px] placeholder-zinc-400/75 focus:outline-none focus:ring-2 focus:ring-[rgb(var(--md-accent-primary-rgb)/0.5)] disabled:opacity-60"
-                  style={{
-                    backgroundColor: "rgb(var(--md-surface-container-rgb))",
-                    border: "1px solid rgb(var(--md-outline-rgb) / 0.25)",
-                    color: "rgb(var(--md-on-surface-rgb))",
-                  }}
-                />
-                <button
-                  type="submit"
-                  disabled={!newName.trim() || creatingRemote}
-                  title="Crea e aggiungi"
-                  className="h-7 w-7 rounded-full disabled:opacity-40 flex items-center justify-center transition-transform active:scale-95 shrink-0"
-                  style={{
-                    backgroundColor: "rgb(var(--md-accent-primary-rgb))",
-                    color: "rgb(var(--md-on-accent-rgb))",
-                  }}
-                >
-                  {creatingRemote ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Plus className="w-3.5 h-3.5" />
-                  )}
-                </button>
-              </form>
             </div>
           </div>,
           document.body,

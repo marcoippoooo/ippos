@@ -389,7 +389,7 @@ mod macos {
 
         let dict = NSMutableDictionary::<NSString, AnyObject>::new();
         let album = if payload.album.is_empty() {
-            "ArchiveTune"
+            "IPPOS"
         } else {
             payload.album.as_str()
         };

@@ -12,6 +12,7 @@ import { formatTime } from "../utils/formatTime";
 import { AddToPlaylistMenu } from "./AddToPlaylistMenu";
 import { ArtistLinks } from "./ArtistLinks";
 import { EqualizerBars } from "./EqualizerBars";
+import { TrackDownloadButton } from "./TrackDownloadButton";
 
 interface ExploreViewProps {
   onReload: () => void;
@@ -209,6 +210,8 @@ export function ExploreView({ onReload }: ExploreViewProps) {
                       track={track}
                       className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
                     />
+
+                    <TrackDownloadButton track={track} />
 
                     <button
                       type="button"

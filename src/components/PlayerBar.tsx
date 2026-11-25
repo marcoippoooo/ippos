@@ -3,6 +3,7 @@ import {
   AlertCircle,
   ChevronUp,
   Heart,
+  Infinity as InfinityIcon,
   ListMusic,
   Loader2,
   Mic2,
@@ -44,6 +45,8 @@ export function PlayerBar() {
   const queueLength = usePlayerStore((s) => s.queue.length);
   const shuffle = usePlayerStore((s) => s.shuffle);
   const repeat = usePlayerStore((s) => s.repeat);
+  const autoplayEnabled = usePlayerStore((s) => s.autoplayEnabled);
+  const autoplayLoading = usePlayerStore((s) => s.autoplayLoading);
 
   const togglePlay = usePlayerStore((s) => s.togglePlay);
   const retryPlayback = usePlayerStore((s) => s.retryPlayback);
@@ -55,6 +58,7 @@ export function PlayerBar() {
   const toggleLike = usePlayerStore((s) => s.toggleLike);
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle);
   const cycleRepeat = usePlayerStore((s) => s.cycleRepeat);
+  const toggleAutoplay = usePlayerStore((s) => s.toggleAutoplay);
   const toggleLyricsView = usePlayerStore((s) => s.toggleLyricsView);
   const toggleQueue = usePlayerStore((s) => s.toggleQueue);
   const openNowPlaying = usePlayerStore((s) => s.openNowPlaying);
@@ -84,14 +88,15 @@ export function PlayerBar() {
 
   return (
     <footer
-      className="h-[90px] shrink-0 w-full backdrop-blur-3xl px-5 grid grid-cols-[minmax(200px,1fr)_minmax(300px,540px)_minmax(190px,1fr)] items-center gap-5 select-none at-tonal"
+      className="h-[86px] shrink-0 mx-3 mb-3 rounded-2xl backdrop-blur-2xl border border-white/[0.08] border-t-white/10 shadow-[0_18px_48px_rgba(0,0,0,0.58),0_2px_12px_rgba(0,0,0,0.35),inset_0_1px_0_rgba(255,255,255,0.10)] px-5 grid grid-cols-[minmax(250px,1.45fr)_minmax(260px,460px)_minmax(185px,0.9fr)] xl:grid-cols-[minmax(310px,1.4fr)_minmax(340px,520px)_minmax(210px,0.95fr)] items-center gap-4 select-none at-tonal"
       style={{
-        backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.86)",
-        borderTop: "1px solid rgb(var(--md-outline-rgb) / 0.22)",
+        backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.66)",
+        backgroundImage:
+          "linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 45%, rgba(0,0,0,0.12) 100%)",
       }}
     >
-      {/* Sinistra: Copertina organica scalloped, titolo, artista ed eventuale errore */}
-      <div className="flex items-center gap-3.5 min-w-0">
+      {/* Sinistra: Copertina organica scalloped, titolo ampio, artista e azioni compatte */}
+      <div className="flex items-center gap-3 min-w-0">
         {currentTrack ? (
           <>
             <button
@@ -99,12 +104,12 @@ export function PlayerBar() {
               onClick={openNowPlaying}
               title="Apri Now Playing espanso"
               aria-label="Apri Now Playing espanso"
-              className="group/art relative rounded-2xl focus:outline-none shrink-0"
+              className="group/art relative rounded-2xl focus:outline-none shrink-0 hover:scale-[1.06] active:scale-[0.94] transition-transform duration-200"
             >
               <ScallopedArtwork
                 src={currentTrack.cover}
                 alt={currentTrack.title}
-                size={56}
+                size={52}
                 variant="cookie10"
                 active={isPlayingState}
                 overlay={
@@ -135,53 +140,15 @@ export function PlayerBar() {
               title="Apri Now Playing espanso"
               className="min-w-0 flex-1 cursor-pointer group/meta"
             >
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 min-w-0">
                 <span
-                  className="text-[13.5px] font-semibold truncate group-hover/meta:underline"
+                  title={currentTrack.title}
+                  className="flex-1 min-w-0 text-[13.5px] font-semibold truncate group-hover/meta:underline"
                   style={{ color: "rgb(var(--md-on-surface-rgb))" }}
                 >
                   {currentTrack.title}
                 </span>
                 {currentTrack.isExplicit && <ExplicitBadge />}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleLike(currentTrack);
-                  }}
-                  aria-label={
-                    isLiked ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"
-                  }
-                  className="p-1 rounded-full text-zinc-400 hover:text-zinc-100 transition-colors duration-300 shrink-0"
-                  style={
-                    isLiked
-                      ? { color: "rgb(var(--md-accent-primary-rgb))" }
-                      : undefined
-                  }
-                >
-                  <Heart
-                    className={`w-3.5 h-3.5 transition-transform duration-150 active:scale-90 ${
-                      isLiked ? "fill-current" : ""
-                    }`}
-                  />
-                </button>
-                <AddToPlaylistMenu
-                  track={currentTrack}
-                  align="left"
-                  openUpward
-                />
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openTrackMenu(currentTrack);
-                  }}
-                  title="Altre azioni traccia"
-                  aria-label="Opzioni traccia"
-                  className="p-1 rounded-full text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.08] transition-colors shrink-0"
-                >
-                  <MoreHorizontal className="w-3.5 h-3.5" />
-                </button>
               </div>
               {isError ? (
                 <div
@@ -214,12 +181,52 @@ export function PlayerBar() {
                 </p>
               )}
             </div>
+
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleLike(currentTrack);
+                }}
+                aria-label={
+                  isLiked ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"
+                }
+                className="p-1.5 rounded-full text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.08] hover:scale-110 active:scale-75 transition-all duration-200 shrink-0"
+                style={
+                  isLiked
+                    ? { color: "rgb(var(--md-accent-primary-rgb))" }
+                    : undefined
+                }
+              >
+                <Heart
+                  className={`w-3.5 h-3.5 ${isLiked ? "fill-current" : ""}`}
+                />
+              </button>
+              <AddToPlaylistMenu
+                track={currentTrack}
+                align="left"
+                openUpward
+              />
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openTrackMenu(currentTrack);
+                }}
+                title="Altre azioni traccia"
+                aria-label="Opzioni traccia"
+                className="p-1.5 rounded-full text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.08] hover:scale-110 active:scale-90 transition-all duration-200 shrink-0"
+              >
+                <MoreHorizontal className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </>
         ) : (
-          <div className="flex items-center gap-3.5 min-w-0">
+          <div className="flex items-center gap-3 min-w-0">
             <ScallopedArtwork
               alt="Nessun brano selezionato"
-              size={56}
+              size={52}
               variant="cookie10"
               fallback={
                 <Music2
@@ -250,7 +257,9 @@ export function PlayerBar() {
             type="button"
             onClick={toggleShuffle}
             title="Riproduzione casuale"
-            className="p-2 rounded-full text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06] transition-colors duration-300"
+            className={`p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/[0.09] hover:scale-105 active:scale-90 transition-all duration-200 ${
+              shuffle ? "border border-white/[0.10]" : ""
+            }`}
             style={
               shuffle
                 ? {
@@ -268,7 +277,7 @@ export function PlayerBar() {
             onClick={playPrevious}
             disabled={!currentTrack}
             title="Brano precedente (⌘←)"
-            className="p-1.5 rounded-full text-zinc-300 hover:text-white hover:bg-white/[0.06] disabled:opacity-35 disabled:pointer-events-none active:scale-95 transition"
+            className="p-1.5 rounded-full text-zinc-300 hover:text-white hover:bg-white/[0.10] hover:scale-110 active:scale-[0.88] disabled:opacity-35 disabled:pointer-events-none transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]"
           >
             <SkipBack className="w-4 h-4 fill-current" />
           </button>
@@ -284,12 +293,14 @@ export function PlayerBar() {
                   ? "Pausa (Spazio)"
                   : "Riproduci (Spazio)"
             }
-            className={`w-10 h-10 flex items-center justify-center hover:scale-105 active:scale-95 disabled:opacity-40 disabled:pointer-events-none transition-[border-radius,transform,background-color,color] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] shadow-md ${
+            className={`w-10 h-10 flex items-center justify-center hover:scale-[1.08] hover:brightness-110 active:scale-[0.92] disabled:opacity-40 disabled:pointer-events-none transition-[border-radius,transform,background-color,color,filter] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
               isPlayingState ? "rounded-[14px]" : "rounded-full"
             }`}
             style={{
               backgroundColor: "rgb(var(--md-accent-primary-rgb))",
               color: "rgb(var(--md-on-accent-rgb))",
+              boxShadow:
+                "0 6px 20px -4px rgb(var(--md-accent-primary-rgb) / 0.55), inset 0 1px 0 rgba(255,255,255,0.28)",
             }}
           >
             <span
@@ -311,7 +322,7 @@ export function PlayerBar() {
             onClick={playNext}
             disabled={!currentTrack}
             title="Brano successivo (⌘→)"
-            className="p-1.5 rounded-full text-zinc-300 hover:text-white hover:bg-white/[0.06] disabled:opacity-35 disabled:pointer-events-none active:scale-95 transition"
+            className="p-1.5 rounded-full text-zinc-300 hover:text-white hover:bg-white/[0.10] hover:scale-110 active:scale-[0.88] disabled:opacity-35 disabled:pointer-events-none transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]"
           >
             <SkipForward className="w-4 h-4 fill-current" />
           </button>
@@ -326,7 +337,9 @@ export function PlayerBar() {
                   ? "Ripeti coda"
                   : "Ripeti brano corrente"
             }
-            className="p-2 rounded-full text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06] transition-colors duration-300"
+            className={`p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/[0.09] hover:scale-105 active:scale-90 transition-all duration-200 ${
+              repeat !== "off" ? "border border-white/[0.10]" : ""
+            }`}
             style={
               repeat !== "off"
                 ? {
@@ -340,6 +353,37 @@ export function PlayerBar() {
               <Repeat1 className="w-3.5 h-3.5" />
             ) : (
               <Repeat className="w-3.5 h-3.5" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={toggleAutoplay}
+            aria-pressed={autoplayEnabled}
+            aria-label="Autoplay e radio infinita"
+            title={
+              autoplayLoading
+                ? "Caricamento radio infinita..."
+                : autoplayEnabled
+                  ? "Autoplay / Radio infinita: attivo"
+                  : "Autoplay / Radio infinita: disattivo"
+            }
+            className={`p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/[0.09] hover:scale-105 active:scale-90 transition-all duration-200 ${
+              autoplayEnabled ? "border border-white/[0.10]" : ""
+            }`}
+            style={
+              autoplayEnabled
+                ? {
+                    backgroundColor: "rgb(var(--md-primary-container-rgb))",
+                    color: "rgb(var(--md-on-primary-container-rgb))",
+                  }
+                : undefined
+            }
+          >
+            {autoplayLoading ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <InfinityIcon className="w-3.5 h-3.5" />
             )}
           </button>
         </div>
@@ -393,10 +437,10 @@ export function PlayerBar() {
               : "Temporizzatore di sonno"
           }
           aria-label="Temporizzatore di sonno"
-          className={`flex items-center gap-1.5 rounded-full transition-colors duration-300 ${
+          className={`flex items-center gap-1.5 rounded-full hover:scale-105 active:scale-90 transition-all duration-200 ${
             sleepDisplay.isActive
-              ? "px-2.5 py-1 text-[11px] font-semibold tabular-nums"
-              : "p-2 hover:bg-white/[0.06]"
+              ? "px-2.5 py-1 text-[11px] font-semibold tabular-nums border border-white/[0.10]"
+              : "p-2 hover:text-white hover:bg-white/[0.09]"
           }`}
           style={
             sleepDisplay.isActive
@@ -415,7 +459,9 @@ export function PlayerBar() {
           type="button"
           onClick={toggleLyricsView}
           title="Mostra testo (⌘L)"
-          className="p-2 rounded-full transition-colors duration-300 hover:bg-white/[0.06]"
+          className={`p-2 rounded-full hover:scale-105 active:scale-90 transition-all duration-200 hover:text-white hover:bg-white/[0.09] ${
+            activeView === "lyrics" ? "border border-white/[0.10]" : ""
+          }`}
           style={
             activeView === "lyrics"
               ? {
@@ -432,7 +478,9 @@ export function PlayerBar() {
           type="button"
           onClick={toggleQueue}
           title="Coda di riproduzione"
-          className="relative p-2 rounded-full transition-colors duration-300 hover:bg-white/[0.06]"
+          className={`relative p-2 rounded-full hover:scale-105 active:scale-90 transition-all duration-200 hover:text-white hover:bg-white/[0.09] ${
+            isQueueOpen ? "border border-white/[0.10]" : ""
+          }`}
           style={
             isQueueOpen
               ? {
@@ -466,7 +514,7 @@ export function PlayerBar() {
                 : "Silenzia (M) · Volume ⌘↑/↓"
             }
             aria-label={isMuted ? "Riattiva audio" : "Silenzia"}
-            className="p-1.5 rounded-full hover:bg-white/[0.06] transition-colors"
+            className="p-1.5 rounded-full hover:text-white hover:bg-white/[0.09] hover:scale-105 active:scale-90 transition-all duration-200"
             style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
           >
             {effectiveVolume === 0 ? (
@@ -486,7 +534,7 @@ export function PlayerBar() {
             ariaLabel="Volume"
             formatTooltip={(v) => `${Math.round(v * 100)}%`}
             onChange={(next) => setVolume(next)}
-            className="w-24"
+            className="w-20 xl:w-24"
           />
         </div>
       </div>

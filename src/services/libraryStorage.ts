@@ -4,10 +4,14 @@ import {
   AudioFormatPreference,
   AudioQualityLevel,
   CloseBehavior,
+  EqualizerBands,
+  EqualizerConfig,
+  EqualizerPresetId,
   LyricsFontPx,
   LyricsFontSize,
   LyricsLineHeight,
   LyricsProviderPriority,
+  PlaylistPrivacyStatus,
   RepeatMode,
   SleepTimerFadeSeconds,
   ThemeDarkMode,
@@ -50,12 +54,20 @@ export const DEFAULT_APP_PREFERENCES: AppPreferences = {
   lyricsFontPx: 26,
   lyricsLineHeight: 1.3,
   lyricsSyncOffsetSec: 0,
+  equalizer: {
+    enabled: false,
+    preset: "flat",
+    bands: [0, 0, 0, 0, 0],
+  },
+  crossfadeSeconds: 0,
+  discordRichPresenceEnabled: true,
 };
 
 export interface PersistedSettings {
   volume: number;
   shuffle: boolean;
   repeat: RepeatMode;
+  autoplayEnabled: boolean;
 }
 
 export interface PersistedLibrary {
@@ -63,6 +75,7 @@ export interface PersistedLibrary {
   recentTracks: Track[];
   playlists: UserPlaylist[];
   playStats: Record<string, TrackPlayStat>;
+  downloadedTrackIds: string[];
   preferences: AppPreferences;
   settings: PersistedSettings;
 }
@@ -72,11 +85,13 @@ export const DEFAULT_PERSISTED_LIBRARY: PersistedLibrary = {
   recentTracks: [],
   playlists: [],
   playStats: {},
+  downloadedTrackIds: [],
   preferences: DEFAULT_APP_PREFERENCES,
   settings: {
     volume: 0.8,
     shuffle: false,
     repeat: "off",
+    autoplayEnabled: true,
   },
 };
 
@@ -139,14 +154,26 @@ function sanitizeTrack(raw: unknown): Track | null {
   };
 }
 
-function sanitizeTrackArray(raw: unknown, limit?: number): Track[] {
+function sanitizeTrackArray(
+  raw: unknown,
+  limitOrOptions?: number | { limit?: number; allowDuplicates?: boolean },
+): Track[] {
   if (!Array.isArray(raw)) return [];
+  const limit =
+    typeof limitOrOptions === "number"
+      ? limitOrOptions
+      : limitOrOptions?.limit;
+  const allowDuplicates =
+    typeof limitOrOptions === "object" && limitOrOptions.allowDuplicates === true;
   const seen = new Set<string>();
   const out: Track[] = [];
   for (const item of raw) {
     const track = sanitizeTrack(item);
-    if (!track || seen.has(track.id)) continue;
-    seen.add(track.id);
+    if (!track) continue;
+    if (!allowDuplicates) {
+      if (seen.has(track.id)) continue;
+      seen.add(track.id);
+    }
     out.push(track);
     if (limit && out.length >= limit) break;
   }
@@ -163,11 +190,34 @@ function sanitizePlaylist(raw: unknown): UserPlaylist | null {
       ? raw.createdAt
       : Date.now();
 
+  const description =
+    typeof raw.description === "string" && raw.description.trim()
+      ? raw.description.trim()
+      : undefined;
+
+  const privacyStatus: PlaylistPrivacyStatus | undefined =
+    raw.privacyStatus === "PRIVATE" ||
+    raw.privacyStatus === "UNLISTED" ||
+    raw.privacyStatus === "PUBLIC"
+      ? raw.privacyStatus
+      : undefined;
+
+  const isRemote = raw.isRemote === true ? true : undefined;
+  const rawRemoteId =
+    typeof raw.remoteId === "string"
+      ? raw.remoteId.trim().replace(/^VL/, "")
+      : "";
+  const remoteId = rawRemoteId || undefined;
+
   return {
     id: raw.id,
     name: raw.name.trim(),
+    ...(description ? { description } : {}),
+    ...(privacyStatus ? { privacyStatus } : {}),
+    ...(isRemote !== undefined ? { isRemote } : {}),
+    ...(remoteId ? { remoteId } : {}),
     createdAt,
-    tracks: sanitizeTrackArray(raw.tracks),
+    tracks: sanitizeTrackArray(raw.tracks, { allowDuplicates: true }),
   };
 }
 
@@ -187,8 +237,12 @@ function sanitizeSettings(raw: unknown): PersistedSettings {
     raw.repeat === "off" || raw.repeat === "all" || raw.repeat === "one"
       ? raw.repeat
       : DEFAULT_PERSISTED_LIBRARY.settings.repeat;
+  const autoplayEnabled =
+    typeof raw.autoplayEnabled === "boolean"
+      ? raw.autoplayEnabled
+      : DEFAULT_PERSISTED_LIBRARY.settings.autoplayEnabled;
 
-  return { volume, shuffle, repeat };
+  return { volume, shuffle, repeat, autoplayEnabled };
 }
 
 function sanitizePlayStats(raw: unknown): Record<string, TrackPlayStat> {
@@ -236,6 +290,20 @@ function sanitizePlayStats(raw: unknown): Record<string, TrackPlayStat> {
   return out;
 }
 
+function sanitizeDownloadedTrackIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const valid: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim();
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(trimmed) || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    valid.push(trimmed);
+  }
+  return valid;
+}
+
 export function validatePersistedLibrary(raw: unknown): PersistedLibrary {
   if (!isRecord(raw)) {
     return DEFAULT_PERSISTED_LIBRARY;
@@ -256,9 +324,43 @@ export function validatePersistedLibrary(raw: unknown): PersistedLibrary {
     recentTracks: sanitizeTrackArray(raw.recentTracks, MAX_RECENT_TRACKS),
     playlists,
     playStats: sanitizePlayStats(raw.playStats),
+    downloadedTrackIds: sanitizeDownloadedTrackIds(raw.downloadedTrackIds),
     preferences: sanitizePreferences(raw.preferences),
     settings: sanitizeSettings(raw.settings),
   };
+}
+
+export function sanitizeEqualizer(raw: unknown): EqualizerConfig {
+  if (!isRecord(raw)) {
+    return DEFAULT_APP_PREFERENCES.equalizer;
+  }
+  const enabled =
+    typeof raw.enabled === "boolean"
+      ? raw.enabled
+      : DEFAULT_APP_PREFERENCES.equalizer.enabled;
+  const preset: EqualizerPresetId =
+    raw.preset === "flat" ||
+    raw.preset === "bass_boost" ||
+    raw.preset === "vocal" ||
+    raw.preset === "electronic" ||
+    raw.preset === "rock" ||
+    raw.preset === "custom"
+      ? raw.preset
+      : DEFAULT_APP_PREFERENCES.equalizer.preset;
+
+  const rawBands = Array.isArray(raw.bands) ? raw.bands : [];
+  const bands: EqualizerBands = [0, 0, 0, 0, 0];
+  for (let i = 0; i < 5; i++) {
+    const val = rawBands[i];
+    if (typeof val === "number" && Number.isFinite(val)) {
+      const clamped = Math.max(-12, Math.min(12, val));
+      bands[i] = Math.round(clamped * 2) / 2;
+    } else {
+      bands[i] = DEFAULT_APP_PREFERENCES.equalizer.bands[i];
+    }
+  }
+
+  return { enabled, preset, bands };
 }
 
 function sanitizePreferences(raw: unknown): AppPreferences {
@@ -407,6 +509,19 @@ function sanitizePreferences(raw: unknown): AppPreferences {
         )
       : DEFAULT_APP_PREFERENCES.lyricsSyncOffsetSec;
 
+  const equalizer = sanitizeEqualizer(raw.equalizer);
+
+  const crossfadeSeconds =
+    typeof raw.crossfadeSeconds === "number" &&
+    Number.isFinite(raw.crossfadeSeconds)
+      ? Math.max(0, Math.min(8, Math.round(raw.crossfadeSeconds)))
+      : DEFAULT_APP_PREFERENCES.crossfadeSeconds;
+
+  const discordRichPresenceEnabled =
+    typeof raw.discordRichPresenceEnabled === "boolean"
+      ? raw.discordRichPresenceEnabled
+      : DEFAULT_APP_PREFERENCES.discordRichPresenceEnabled;
+
   return {
     dynamicThemeEnabled,
     vibrancyIntensity,
@@ -432,6 +547,9 @@ function sanitizePreferences(raw: unknown): AppPreferences {
     lyricsFontPx,
     lyricsLineHeight,
     lyricsSyncOffsetSec,
+    equalizer,
+    crossfadeSeconds,
+    discordRichPresenceEnabled,
   };
 }
 
@@ -455,20 +573,29 @@ export async function loadPersistedLibrary(): Promise<PersistedLibrary> {
   try {
     const store = await getTauriStore();
     if (store) {
-      const [liked, recent, playlists, playStats, preferences, settings] =
-        await Promise.all([
-          store.get<unknown>("likedTracks"),
-          store.get<unknown>("recentTracks"),
-          store.get<unknown>("playlists"),
-          store.get<unknown>("playStats"),
-          store.get<unknown>("preferences"),
-          store.get<unknown>("settings"),
-        ]);
+      const [
+        liked,
+        recent,
+        playlists,
+        playStats,
+        downloadedTrackIds,
+        preferences,
+        settings,
+      ] = await Promise.all([
+        store.get<unknown>("likedTracks"),
+        store.get<unknown>("recentTracks"),
+        store.get<unknown>("playlists"),
+        store.get<unknown>("playStats"),
+        store.get<unknown>("downloadedTrackIds"),
+        store.get<unknown>("preferences"),
+        store.get<unknown>("settings"),
+      ]);
       return validatePersistedLibrary({
         likedTracks: liked,
         recentTracks: recent,
         playlists,
         playStats,
+        downloadedTrackIds,
         preferences,
         settings,
       });
@@ -497,6 +624,7 @@ async function writeLibraryNow(data: PersistedLibrary): Promise<void> {
         store.set("recentTracks", data.recentTracks),
         store.set("playlists", data.playlists),
         store.set("playStats", data.playStats),
+        store.set("downloadedTrackIds", data.downloadedTrackIds),
         store.set("preferences", data.preferences),
         store.set("settings", data.settings),
       ]);

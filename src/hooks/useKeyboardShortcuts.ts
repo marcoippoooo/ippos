@@ -30,7 +30,11 @@ function isInteractiveControl(target: EventTarget | null): boolean {
 function hasBlockingModalOpen(
   state: ReturnType<typeof usePlayerStore.getState>,
 ): boolean {
-  if (state.isSleepTimerOpen || state.contextMenuTrack !== null) {
+  if (
+    state.isSleepTimerOpen ||
+    state.isCreatePlaylistModalOpen ||
+    state.contextMenuTrack !== null
+  ) {
     return true;
   }
   return Boolean(
@@ -67,6 +71,9 @@ export function useKeyboardShortcuts() {
 
       // 1. Escape: chiusura ordinata di modali, overlay, focus ricerca e coda
       if (e.key === "Escape") {
+        if (state.isCreatePlaylistModalOpen) {
+          return;
+        }
         if (state.contextMenuTrack !== null) {
           return;
         }
@@ -78,6 +85,11 @@ export function useKeyboardShortcuts() {
         if (state.isNowPlayingOpen) {
           e.preventDefault();
           state.closeNowPlaying();
+          return;
+        }
+        if (state.isCinemaMode) {
+          e.preventDefault();
+          state.setCinemaMode(false);
           return;
         }
         const activeEl = document.activeElement;

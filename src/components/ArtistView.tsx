@@ -28,6 +28,7 @@ import { ArtistLinks } from "./ArtistLinks";
 import { EqualizerBars } from "./EqualizerBars";
 import { ExplicitBadge } from "./ExplicitBadge";
 import { ScallopedArtwork } from "./ScallopedArtwork";
+import { TrackDownloadButton } from "./TrackDownloadButton";
 
 type ReleaseFilter = "all" | "album" | "single";
 
@@ -305,6 +306,8 @@ export function ArtistView() {
             track={track}
             className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
           />
+
+          <TrackDownloadButton track={track} />
 
           <button
             type="button"

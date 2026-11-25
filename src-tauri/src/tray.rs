@@ -38,13 +38,13 @@ pub fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let toggle_window_item = MenuItem::with_id(
         app,
         "tray_toggle_window",
-        "Mostra / Nascondi ArchiveTune",
+        "Mostra / Nascondi IPPOS",
         true,
         None::<&str>,
     )?;
     let sep3 = PredefinedMenuItem::separator(app)?;
     let quit_item =
-        MenuItem::with_id(app, "tray_quit", "Esci da ArchiveTune", true, None::<&str>)?;
+        MenuItem::with_id(app, "tray_quit", "Esci da IPPOS", true, None::<&str>)?;
 
     let menu = Menu::with_items(
         app,
@@ -66,7 +66,7 @@ pub fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .icon_as_template(false)
-        .tooltip("ArchiveTune")
+        .tooltip("IPPOS")
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -138,9 +138,9 @@ pub fn update_tray_state(
 
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let tooltip = if now_playing_label == "Nessun brano in riproduzione" {
-            "ArchiveTune".to_string()
+            "IPPOS".to_string()
         } else {
-            format!("ArchiveTune — {now_playing_label}")
+            format!("IPPOS — {now_playing_label}")
         };
         let _ = tray.set_tooltip(Some(tooltip));
     }

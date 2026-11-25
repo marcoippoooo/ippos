@@ -74,11 +74,32 @@ export interface TrackPlayStat {
 
 export type PlaylistSortBy = "recent" | "name" | "count";
 
+export type PlaylistTrackSortBy = "default" | "title" | "artist" | "duration";
+
+export type PlaylistPrivacyStatus = "PRIVATE" | "UNLISTED" | "PUBLIC";
+
 export interface UserPlaylist {
   id: string;
   name: string;
+  description?: string;
+  privacyStatus?: PlaylistPrivacyStatus;
+  isRemote?: boolean;
+  remoteId?: string;
   createdAt: number;
   tracks: Track[];
+}
+
+export interface CreatePlaylistParams {
+  title: string;
+  description?: string;
+  privacyStatus?: PlaylistPrivacyStatus;
+  syncWithYTMusic?: boolean;
+  initialTrack?: Track;
+}
+
+export interface CreatePlaylistResult {
+  id: string;
+  isRemote: boolean;
 }
 
 export type LibrarySortBy = "recent" | "title" | "artist";
@@ -149,6 +170,22 @@ export type LyricsFontSize = "normal" | "large" | "xlarge";
 export type LyricsFontPx = 20 | 24 | 26 | 30;
 export type LyricsLineHeight = 1.2 | 1.3 | 1.5;
 
+export type EqualizerPresetId =
+  | "flat"
+  | "bass_boost"
+  | "vocal"
+  | "electronic"
+  | "rock"
+  | "custom";
+
+export type EqualizerBands = [number, number, number, number, number];
+
+export interface EqualizerConfig {
+  enabled: boolean;
+  preset: EqualizerPresetId;
+  bands: EqualizerBands;
+}
+
 export interface AppPreferences {
   dynamicThemeEnabled: boolean;
   vibrancyIntensity: VibrancyIntensity;
@@ -174,6 +211,9 @@ export interface AppPreferences {
   lyricsFontPx: LyricsFontPx;
   lyricsLineHeight: LyricsLineHeight;
   lyricsSyncOffsetSec: number;
+  equalizer: EqualizerConfig;
+  crossfadeSeconds: number;
+  discordRichPresenceEnabled: boolean;
 }
 
 export type LibraryTab = "overview" | "liked" | "recent" | "top" | "playlists";
@@ -192,9 +232,12 @@ export interface RemotePlaylist {
   id: string;
   title: string;
   subtitle?: string;
+  description?: string;
+  privacyStatus?: PlaylistPrivacyStatus;
   cover: string;
   trackCount?: string;
   isLikedSongs?: boolean;
+  isRemote?: boolean;
 }
 
 export interface StreamTechnicalDetails {

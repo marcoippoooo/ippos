@@ -15,6 +15,7 @@ import { formatTime } from "../utils/formatTime";
 import { AddToPlaylistMenu } from "./AddToPlaylistMenu";
 import { ArtistLinks } from "./ArtistLinks";
 import { EqualizerBars } from "./EqualizerBars";
+import { TrackDownloadButton } from "./TrackDownloadButton";
 
 const FILTERS: { id: SearchFilter; label: string }[] = [
   { id: "song", label: "Brani" },
@@ -415,6 +416,8 @@ export function SearchResultsView() {
                     track={track}
                     className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
                   />
+
+                  <TrackDownloadButton track={track} />
 
                   <button
                     type="button"

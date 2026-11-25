@@ -6,11 +6,19 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { GripVertical, Play, Trash2, X } from "lucide-react";
+import {
+  GripVertical,
+  Infinity as InfinityIcon,
+  Loader2,
+  Play,
+  Trash2,
+  X,
+} from "lucide-react";
 import { usePlayerStore } from "../store/playerStore";
 import { ArtistLinks } from "./ArtistLinks";
 import { EqualizerBars } from "./EqualizerBars";
 import { ExplicitBadge } from "./ExplicitBadge";
+import { M3ExpressiveSwitch } from "./SettingsPrimitives";
 
 interface DragState {
   fromIndex: number;
@@ -35,11 +43,15 @@ export function QueuePanel() {
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const playbackStatus = usePlayerStore((s) => s.playbackStatus);
   const queue = usePlayerStore((s) => s.queue);
+  const autoplayEnabled = usePlayerStore((s) => s.autoplayEnabled);
+  const autoplayLoading = usePlayerStore((s) => s.autoplayLoading);
+  const repeat = usePlayerStore((s) => s.repeat);
   const toggleQueue = usePlayerStore((s) => s.toggleQueue);
   const playFromQueue = usePlayerStore((s) => s.playFromQueue);
   const removeFromQueue = usePlayerStore((s) => s.removeFromQueue);
   const reorderQueue = usePlayerStore((s) => s.reorderQueue);
   const clearQueue = usePlayerStore((s) => s.clearQueue);
+  const setAutoplayEnabled = usePlayerStore((s) => s.setAutoplayEnabled);
 
   const [dragState, setDragState] = useState<DragState | null>(null);
 
@@ -270,16 +282,14 @@ export function QueuePanel() {
 
   return (
     <aside
-      className="at-panel-in w-[328px] shrink-0 h-full backdrop-blur-2xl flex flex-col select-none at-tonal"
+      className="at-panel-in w-[328px] shrink-0 h-full backdrop-blur-2xl border-l border-white/[0.08] shadow-[-12px_0_40px_rgba(0,0,0,0.42)] flex flex-col select-none at-tonal"
       style={{
-        backgroundColor: "rgb(var(--md-surface-container-low-rgb) / 0.84)",
-        borderLeft: "1px solid rgb(var(--md-outline-rgb) / 0.22)",
+        backgroundColor: "rgb(var(--md-surface-container-low-rgb) / 0.60)",
+        backgroundImage:
+          "linear-gradient(180deg, rgba(255,255,255,0.045) 0%, rgba(255,255,255,0.01) 30%, rgba(0,0,0,0.14) 100%)",
       }}
     >
-      <div
-        className="px-4 py-3.5 flex items-center justify-between gap-2 shrink-0"
-        style={{ borderBottom: "1px solid rgb(var(--md-outline-rgb) / 0.18)" }}
-      >
+      <div className="px-4 py-3.5 flex items-center justify-between gap-2 shrink-0 border-b border-white/[0.08]">
         <div className="min-w-0 flex items-center gap-2">
           <h2
             className="text-[13.5px] font-semibold truncate"
@@ -345,10 +355,9 @@ export function QueuePanel() {
                   : "In pausa"}
             </div>
             <div
-              className="flex items-center gap-3 p-2.5 rounded-2xl at-tonal"
+              className="flex items-center gap-3 p-2.5 rounded-2xl border border-white/[0.10] shadow-lg shadow-black/25 at-tonal"
               style={{
-                backgroundColor: "rgb(var(--md-primary-container-rgb) / 0.65)",
-                border: "1px solid rgb(var(--md-outline-rgb) / 0.25)",
+                backgroundColor: "rgb(var(--md-primary-container-rgb) / 0.62)",
               }}
             >
               <img
@@ -408,7 +417,9 @@ export function QueuePanel() {
               className="px-1 py-4 text-[12px]"
               style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
             >
-              La coda è vuota. Passa il mouse su un brano e premi + per accodarlo.
+              {autoplayEnabled
+                ? "La coda è vuota. Con Autoplay attivo, al termine del brano partirà la radio infinita."
+                : "La coda è vuota. Passa il mouse su un brano e premi + per accodarlo."}
             </p>
           ) : (
             <div className="space-y-1 relative">
@@ -542,6 +553,62 @@ export function QueuePanel() {
             </div>
           )}
         </div>
+      </div>
+
+      <div
+        className="px-4 py-3 flex items-center justify-between gap-3 shrink-0 border-t border-white/[0.08] at-tonal"
+        style={{
+          backgroundColor: "rgb(var(--md-surface-container-rgb) / 0.52)",
+        }}
+      >
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div
+            className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 at-tonal"
+            style={
+              autoplayEnabled
+                ? {
+                    backgroundColor: "rgb(var(--md-primary-container-rgb))",
+                    color: "rgb(var(--md-accent-primary-rgb))",
+                  }
+                : {
+                    backgroundColor: "rgb(var(--md-surface-container-high-rgb))",
+                    color: "rgb(var(--md-on-surface-variant-rgb))",
+                  }
+            }
+          >
+            {autoplayLoading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <InfinityIcon className="w-4 h-4" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <p
+              className="text-[12.5px] font-semibold truncate"
+              style={{ color: "rgb(var(--md-on-surface-rgb))" }}
+            >
+              Autoplay
+            </p>
+            <p
+              className="text-[11px] truncate"
+              style={{ color: "rgb(var(--md-on-surface-variant-rgb))" }}
+            >
+              {autoplayLoading
+                ? "Caricamento radio infinita..."
+                : autoplayEnabled
+                  ? repeat !== "off"
+                    ? "In pausa con Ripeti attivo"
+                    : "Radio infinita a fine coda"
+                  : "Stop automatico a fine coda"}
+            </p>
+          </div>
+        </div>
+
+        <M3ExpressiveSwitch
+          checked={autoplayEnabled}
+          onChange={(val) => setAutoplayEnabled(val)}
+          ariaLabel="Autoplay e radio infinita"
+        />
       </div>
     </aside>
   );
