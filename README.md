@@ -1,4 +1,4 @@
-🎵 Ippos (Desktop Client for macOS)
+## 🎵 Ippos (Desktop Client for macOS)
 
 An open-source desktop client designed for macOS, built with **Tauri v2**, **React**, and **TypeScript**. 
 
