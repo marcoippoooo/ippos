@@ -25,7 +25,7 @@ Download the latest pre-built `.dmg` from the **[Releases](https://github.com/ma
 3. *(First launch)* Right-click **Ippos** → **Open**, or run in terminal if blocked:
    ```bash
    xattr -cr /Applications/Ippos.app
-🛠️ Tech Stack
+# 🛠️ Tech Stack
 Framework: Tauri v2 (Rust backend)
 
 Frontend: React 18, TypeScript, Vite, Tailwind CSS
@@ -34,7 +34,7 @@ State Management: Zustand
 
 Media Engine: Custom Rust audio proxy + WebKit Web Audio
 
-💻 Development & Build
+# 💻 Development & Build
 Prerequisites
 Node.js (v18+)
 
