@@ -1,0 +1,240 @@
+@import "tailwindcss";
+
+:root {
+  --theme-primary-rgb: 124 60 76;
+  --theme-secondary-rgb: 110 60 124;
+  --theme-accent-rgb: 246 137 158;
+  --md-surface-base-rgb: 17 14 15;
+  --md-surface-container-low-rgb: 26 21 22;
+  --md-surface-container-rgb: 35 29 30;
+  --md-surface-container-high-rgb: 48 38 40;
+  --md-primary-container-rgb: 96 29 42;
+  --md-on-primary-container-rgb: 243 216 221;
+  --md-secondary-container-rgb: 60 42 65;
+  --md-on-secondary-container-rgb: 231 213 235;
+  --md-accent-primary-rgb: 246 137 158;
+  --md-on-accent-rgb: 54 13 20;
+  --md-outline-rgb: 100 84 88;
+  --md-on-surface-rgb: 242 240 240;
+  --md-on-surface-variant-rgb: 186 171 175;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: rgb(var(--md-surface-base-rgb));
+    color: rgb(var(--md-on-surface-rgb));
+    color-scheme: dark;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Transizione cromatica morbida per superfici e accenti Monet */
+.at-tonal {
+  transition:
+    background-color 650ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 650ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 420ms ease,
+    box-shadow 650ms ease;
+}
+
+/* Scrollbar discreta tinta sui toni del brano corrente */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--md-outline-rgb) / 0.32);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--md-outline-rgb) / 0.56);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Utility colore accento dinamico */
+.text-accent {
+  color: rgb(var(--md-accent-primary-rgb));
+}
+
+/* Micro-animazioni GPU sobrie stile macOS */
+@keyframes eq-bar {
+  0%, 100% {
+    transform: scaleY(0.28);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.at-eq-bar {
+  transform-origin: bottom;
+  animation: eq-bar 0.85s ease-in-out infinite;
+}
+
+@keyframes icon-pop {
+  0% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.at-icon-pop {
+  animation: icon-pop 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes panel-in {
+  0% {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.at-panel-in {
+  animation: panel-in 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes view-fade {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.at-view-fade {
+  animation: view-fade 180ms ease-out;
+}
+
+@keyframes sheet-up {
+  0% {
+    opacity: 0;
+    transform: translateY(22px) scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.at-sheet-up {
+  animation: sheet-up 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes modal-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.95) translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.at-modal-pop {
+  animation: modal-pop 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes toast-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.at-toast-in {
+  animation: toast-in 180ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes toast-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+}
+
+.at-toast-out {
+  animation: toast-out 180ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .at-tonal {
+    transition: none;
+  }
+  .at-eq-bar {
+    animation: none;
+    transform: scaleY(0.7);
+  }
+  .at-icon-pop,
+  .at-panel-in,
+  .at-view-fade,
+  .at-sheet-up,
+  .at-modal-pop,
+  .at-toast-in,
+  .at-toast-out {
+    animation: none;
+  }
+}
+
+/* Impostazione accessibilità / prestazioni: disattiva blur in tutta l'app */
+html.at-no-blur *,
+html.at-no-blur *::before,
+html.at-no-blur *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Impostazione accessibilità / prestazioni: disattiva animazioni e transizioni */
+html.at-no-animations *,
+html.at-no-animations *::before,
+html.at-no-animations *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
