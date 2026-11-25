@@ -1,4 +1,4 @@
-## 🎵 Ippos (Desktop Client for macOS)
+# 🎵 Ippos (Desktop Client for macOS)
 
 An open-source desktop client designed for macOS, built with **Tauri v2**, **React**, and **TypeScript**. 
 
@@ -6,7 +6,7 @@ Ippos brings the **ArchiveTune** streaming experience to desktop, featuring an e
 
 ---
 
-## ✨ Features
+# ✨ Features
 
 - **Expressive UI:** Bento Grid settings layout, smooth animations, and responsive controls.
 - **YouTube Music Sync:** Full library integration, real-time playlist management (sync, add, remove), and Google account authentication.
@@ -16,7 +16,7 @@ Ippos brings the **ArchiveTune** streaming experience to desktop, featuring an e
 
 ---
 
-## 🚀 Download & Installation
+# 🚀 Download & Installation
 
 Download the latest pre-built `.dmg` from the **[Releases](https://github.com/marcoippoooo/ippos/releases)** page:
 
@@ -25,7 +25,7 @@ Download the latest pre-built `.dmg` from the **[Releases](https://github.com/ma
 3. *(First launch)* Right-click **Ippos** → **Open**, or run in terminal if blocked:
    ```bash
    xattr -cr /Applications/Ippos.app
-# 🛠️ Tech Stack
+## 🛠️ Tech Stack
 Framework: Tauri v2 (Rust backend)
 
 Frontend: React 18, TypeScript, Vite, Tailwind CSS
@@ -34,7 +34,7 @@ State Management: Zustand
 
 Media Engine: Custom Rust audio proxy + WebKit Web Audio
 
-# 💻 Development & Build
+## 💻 Development & Build
 Prerequisites
 Node.js (v18+)
 
